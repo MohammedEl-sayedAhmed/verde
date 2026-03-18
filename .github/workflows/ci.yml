@@ -30,7 +30,8 @@ jobs:
             gettext \
             desktop-file-utils \
             appstream \
-            python3-pip
+            python3-pip \
+            xvfb
 
       - name: Install Python tools
         run: pip install --break-system-packages ruff mypy pytest
@@ -54,4 +55,4 @@ jobs:
         run: mypy src/verde/ --ignore-missing-imports
 
       - name: Unit tests
-        run: pytest tests/unit/ -v
+        run: xvfb-run pytest tests/unit/ -v
