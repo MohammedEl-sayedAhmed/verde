@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import pathlib
@@ -16,6 +17,12 @@ from collections.abc import Callable
 from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
+from verde_daemon.apt_errors import (
+    classify_apt_error,
+    detect_dpkg_lock,
+    remove_operation_marker,
+    write_operation_marker,
+)
 from verde_daemon.audit import OP_INSTALL_DRIVER, AuditLogger
 from verde_daemon.degraded_states import (
     DegradedState,
@@ -25,7 +32,7 @@ from verde_daemon.degraded_states import (
 )
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
-from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
+from verde_daemon.polkit import METHOD_ACTION_MAP, PolkitAgentMissing, check_authorization
 from verde_daemon.preflight import PreflightChecker
 from verde_daemon.validators import (
     validate_driver_version,
@@ -97,6 +104,9 @@ class VerdeService:
         # Concurrency guard for driver operations (FR40)
         self._operation_in_progress: bool = False
         self._current_op_id: str | None = None
+
+        # Startup error from interrupted operation detection (FR48)
+        self._startup_error = None
 
         # NVML wrapper — injected for testing, created automatically otherwise
         if nvml is not None:
@@ -357,7 +367,26 @@ class VerdeService:
                     return
 
         # Polkit authorization check
-        if not check_authorization(connection, sender, action_id):
+        try:
+            authorized = check_authorization(connection, sender, action_id)
+        except PolkitAgentMissing:
+            log.warning("Polkit agent missing for method %s from %s", method_name, sender)
+            invocation.return_dbus_error(
+                "com.verde.Error.PolkitAgentMissing",
+                "Authentication service is not available. "
+                "Ensure a Polkit authentication agent is running "
+                "(e.g., polkit-gnome-authentication-agent-1 or GNOME Shell).",
+            )
+            if self._audit:
+                self._audit.log(
+                    "POLKIT_AGENT_MISSING",
+                    {"method": method_name, "action": action_id},
+                    sender,
+                    "failed",
+                    error="Polkit authentication agent not available",
+                )
+            return
+        if not authorized:
             invocation.return_dbus_error(
                 "com.verde.Error.NotAuthorized",
                 "Authorization required for this operation",
@@ -375,6 +404,11 @@ class VerdeService:
         # Driver operation dispatch
         if method_name == "InstallDriver":
             self._dispatch_install_driver(parameters, invocation, sender)
+            return
+
+        # Repair dpkg (FR15 — Story 2.5)
+        if method_name == "RepairDpkg":
+            self._dispatch_repair_dpkg(invocation, sender)
             return
 
         # Remaining methods — stubs until actual implementations
@@ -471,6 +505,24 @@ class VerdeService:
             )
             return
 
+        # Check dpkg lock before starting (FR44)
+        lock_error = detect_dpkg_lock()
+        if lock_error is not None:
+            dbus_dict = lock_error.to_dbus_dict()
+            invocation.return_dbus_error(
+                "com.verde.Error.DpkgLocked",
+                dbus_dict["error_title"] + ": " + dbus_dict["error_description"],
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_INSTALL_DRIVER,
+                    {"driver": f"nvidia-driver-{version}"},
+                    sender,
+                    "blocked",
+                    error="dpkg lock held",
+                )
+            return
+
         # Acquire guard and generate op_id
         self._operation_in_progress = True
         op_id = uuid.uuid4().hex[:12]
@@ -506,37 +558,78 @@ class VerdeService:
             # Acquire systemd inhibitor lock (FR89)
             inhibitor_fd = self._acquire_inhibitor_lock(f"Installing nvidia-driver-{version}")
 
+            # Write operation marker (FR48 — interrupted operation detection)
+            write_operation_marker("install_driver", version)
+
             # Snapshot stub (Story 3.1 will provide real implementation)
             self._create_pre_install_snapshot(version)
 
             # Run APT install with progress
-            success, message = self._run_apt_install(op_id, version)
+            success, message, returncode, timed_out = self._run_apt_install(op_id, version)
 
-            # Emit completion signals
-            self._emit_signal("OperationComplete", "(sbs)", (op_id, success, message))
             if success:
+                # Remove operation marker on success
+                remove_operation_marker()
+
+                # Emit completion signals
+                self._emit_signal("OperationComplete", "(sbs)", (op_id, True, message))
                 self._emit_signal(
                     "RebootRequired",
                     "(bs)",
                     (True, "Reboot required to load new driver"),
                 )
+            else:
+                # Classify the error for actionable response (FR46)
+                error_response = classify_apt_error(
+                    returncode=returncode,
+                    stdout="",
+                    stderr=message,
+                    timed_out=timed_out,
+                )
+                dbus_dict = error_response.to_dbus_dict()
 
-            # Audit: operation result
+                # Emit structured error via OperationComplete (P-4: JSON-encoded dict)
+                self._emit_signal(
+                    "OperationComplete",
+                    "(sbs)",
+                    (op_id, False, json.dumps(dbus_dict)),
+                )
+
+                # Log raw output to audit (NFR-SEC-4) but NOT to D-Bus
+                if self._audit:
+                    self._audit.log(
+                        OP_INSTALL_DRIVER,
+                        {
+                            "driver": f"nvidia-driver-{version}",
+                            "error_category": error_response.category.value,
+                        },
+                        sender,
+                        "failed",
+                        error=error_response.raw_output,
+                    )
+                return  # Skip the success audit below
+
+            # Audit: operation success
             if self._audit:
                 self._audit.log(
                     OP_INSTALL_DRIVER,
                     {"driver": f"nvidia-driver-{version}"},
                     sender,
-                    "success" if success else "failed",
-                    error=message if not success else None,
+                    "success",
                 )
 
         except Exception as exc:
             log.exception("Unhandled error in install worker for %s", op_id)
+            # P-3: Never expose raw Python exceptions to D-Bus
+            error_response = classify_apt_error(
+                returncode=-1,
+                stdout="",
+                stderr=str(exc),
+            )
             self._emit_signal(
                 "OperationComplete",
                 "(sbs)",
-                (op_id, False, f"Internal error: {exc}"),
+                (op_id, False, json.dumps(error_response.to_dbus_dict())),
             )
             if self._audit:
                 self._audit.log(
@@ -547,6 +640,9 @@ class VerdeService:
                     error=str(exc),
                 )
         finally:
+            # P-2: Always clean up operation marker
+            remove_operation_marker()
+
             # Release inhibitor lock
             self._release_inhibitor_lock(inhibitor_fd)
 
@@ -564,7 +660,7 @@ class VerdeService:
     # APT subprocess with Status-Fd progress (FR13, NFR-SEC-3)
     # ------------------------------------------------------------------
 
-    def _run_apt_install(self, op_id: str, version: str) -> tuple[bool, str]:
+    def _run_apt_install(self, op_id: str, version: str) -> tuple[bool, str, int, bool]:
         """Run apt-get install with progress parsing. Returns (success, message)."""
         read_fd, write_fd = os.pipe()
         cmd = [
@@ -587,7 +683,7 @@ class VerdeService:
         except OSError:
             os.close(read_fd)
             os.close(write_fd)
-            return (False, "apt-get not found or not executable")
+            return (False, "apt-get not found or not executable", -1, False)
 
         os.close(write_fd)  # Close write end in parent
 
@@ -646,6 +742,8 @@ class VerdeService:
             return (
                 False,
                 f"Installation timed out after {self._APT_TIMEOUT_SECONDS} seconds",
+                -1,
+                True,
             )
 
         # Wait for process to finish (should already be done since pipe hit EOF)
@@ -654,19 +752,24 @@ class VerdeService:
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
-            return (False, "Process did not exit after pipe closed")
+            return (False, "Process did not exit after pipe closed", -1, True)
 
         if proc.returncode == 0:
-            return (True, f"Driver nvidia-driver-{version} installed successfully")
+            return (True, f"Driver nvidia-driver-{version} installed successfully", 0, False)
 
-        # P-4: Read stderr after process completion (safe — process is dead)
+        # Read stderr after process completion (safe — process is dead)
         stderr = ""
         if proc.stderr:
             try:
                 stderr = proc.stderr.read().decode(errors="replace").strip()
             except Exception:
                 stderr = "Unknown error"
-        return (False, stderr or f"apt-get exited with code {proc.returncode}")
+        return (
+            False,
+            stderr or f"apt-get exited with code {proc.returncode}",
+            proc.returncode,
+            False,
+        )
 
     # ------------------------------------------------------------------
     # D-Bus signal emission (thread-safe via GLib.idle_add)
@@ -726,6 +829,153 @@ class VerdeService:
         if fd is not None:
             with contextlib.suppress(OSError):
                 os.close(fd)
+
+    # ------------------------------------------------------------------
+    # Startup error (FR48 — interrupted operation)
+    # ------------------------------------------------------------------
+
+    def set_startup_error(self, error) -> None:
+        """Store an error detected during daemon startup and emit D-Bus signal.
+
+        Emits the error as a D-Bus signal so the GUI can receive the
+        interrupted-operation notice after connecting to the bus.
+        """
+        self._startup_error = error
+        if error is not None:
+            dbus_dict = error.to_dbus_dict()
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                ("startup", False, json.dumps(dbus_dict)),
+            )
+
+    # ------------------------------------------------------------------
+    # Repair dpkg (FR15 — Story 2.5)
+    # ------------------------------------------------------------------
+
+    def _dispatch_repair_dpkg(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle RepairDpkg: run dpkg --configure -a to repair broken packages."""
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                "Another operation is already in progress",
+            )
+            return
+
+        # P-7: Check dpkg lock before starting
+        lock_error = detect_dpkg_lock()
+        if lock_error is not None:
+            dbus_dict = lock_error.to_dbus_dict()
+            invocation.return_dbus_error(
+                "com.verde.Error.DpkgLocked",
+                dbus_dict["error_title"] + ": " + dbus_dict["error_description"],
+            )
+            if self._audit:
+                self._audit.log("REPAIR_DPKG", {}, sender, "blocked", error="dpkg lock held")
+            return
+
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        def _do_repair() -> None:
+            try:
+                GLib.idle_add(self._on_idle_hold)
+
+                if self._audit:
+                    self._audit.log(
+                        "REPAIR_DPKG",
+                        {},
+                        sender,
+                        "started",
+                    )
+
+                result = subprocess.run(
+                    ["dpkg", "--configure", "-a"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+
+                if result.returncode == 0:
+                    remove_operation_marker()
+                    self._startup_error = None
+                    self._emit_signal(
+                        "OperationComplete", "(sbs)", (op_id, True, "Package system repaired")
+                    )
+                    if self._audit:
+                        self._audit.log("REPAIR_DPKG", {}, sender, "success")
+                else:
+                    error_resp = classify_apt_error(
+                        result.returncode, result.stdout, result.stderr
+                    )
+                    self._emit_signal(
+                        "OperationComplete",
+                        "(sbs)",
+                        (op_id, False, json.dumps(error_resp.to_dbus_dict())),
+                    )
+                    if self._audit:
+                        self._audit.log(
+                            "REPAIR_DPKG",
+                            {"error_category": error_resp.category.value},
+                            sender,
+                            "failed",
+                            error=error_resp.raw_output,
+                        )
+
+            except subprocess.TimeoutExpired:
+                # P-3: Use classified error, not raw string
+                error_resp = classify_apt_error(
+                    returncode=-1,
+                    stdout="",
+                    stderr="",
+                    timed_out=True,
+                )
+                self._emit_signal(
+                    "OperationComplete",
+                    "(sbs)",
+                    (op_id, False, json.dumps(error_resp.to_dbus_dict())),
+                )
+                # P-10: Audit log for timeout
+                if self._audit:
+                    self._audit.log(
+                        "REPAIR_DPKG",
+                        {"error_category": "subprocess_timeout"},
+                        sender,
+                        "failed",
+                        error="Repair operation timed out after 120s",
+                    )
+            except Exception as exc:
+                log.exception("Repair dpkg failed: %s", exc)
+                # P-3: Never expose raw Python exceptions to D-Bus
+                error_resp = classify_apt_error(
+                    returncode=-1,
+                    stdout="",
+                    stderr=str(exc),
+                )
+                self._emit_signal(
+                    "OperationComplete",
+                    "(sbs)",
+                    (op_id, False, json.dumps(error_resp.to_dbus_dict())),
+                )
+            finally:
+
+                def _release() -> bool:
+                    self._operation_in_progress = False
+                    self._current_op_id = None
+                    self._on_idle_release()
+                    return GLib.SOURCE_REMOVE
+
+                GLib.idle_add(_release)
+
+        thread = threading.Thread(target=_do_repair, daemon=True)
+        thread.start()
 
     # ------------------------------------------------------------------
     # Snapshot stub (real implementation in Story 3.1)

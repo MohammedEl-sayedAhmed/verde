@@ -18,6 +18,7 @@ _POLKIT_TIMEOUT_MS = 5000
 METHOD_ACTION_MAP: dict[str, str] = {
     "InstallDriver": "com.verde.driver.manage",
     "RollbackDriver": "com.verde.driver.manage",
+    "RepairDpkg": "com.verde.driver.manage",
     "ListSnapshots": "com.verde.driver.manage",
     "FixSuspend": "com.verde.power.manage",
     "FixHibernate": "com.verde.power.manage",
@@ -86,8 +87,18 @@ def check_authorization(
         return False
 
     except GLib.Error as exc:
-        log.error("Polkit authorization check failed: %s", exc.message)
+        # Detect missing auth agent vs other Polkit failures
+        msg = exc.message if hasattr(exc, "message") else str(exc)
+        if "authentication agent" in msg.lower() or "no agent" in msg.lower():
+            raise PolkitAgentMissing(msg) from exc
+        log.error("Polkit authorization check failed: %s", msg)
         return False
+    except PolkitAgentMissing:
+        raise  # Re-raise so callers can distinguish
     except Exception:
         log.exception("Unexpected error during Polkit authorization check")
         return False
+
+
+class PolkitAgentMissing(Exception):
+    """Raised when Polkit authentication agent is not available."""

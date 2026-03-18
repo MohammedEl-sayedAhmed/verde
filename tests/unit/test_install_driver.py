@@ -155,7 +155,7 @@ class TestConcurrencyGuard:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")):
+        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         assert wired_service._operation_in_progress is False
@@ -166,7 +166,9 @@ class TestConcurrencyGuard:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(False, "err")):
+        with patch.object(
+            wired_service, "_run_apt_install", return_value=(False, "err", 1, False)
+        ):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         assert wired_service._operation_in_progress is False
@@ -207,7 +209,7 @@ class TestIdleTimerHoldRelease:
         wired_service._current_op_id = "testop"
 
         with (
-            patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")),
+            patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)),
             patch.object(wired_service, "_acquire_inhibitor_lock", return_value=None),
             patch.object(wired_service, "_release_inhibitor_lock"),
             patch("service.GLib.idle_add", side_effect=lambda fn: fn()),
@@ -275,7 +277,7 @@ class TestInhibitorLock:
         wired_service._current_op_id = "testop"
 
         with (
-            patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")),
+            patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)),
             patch("service.GLib.idle_add", side_effect=lambda fn: fn()),
         ):
             wired_service._do_install("testop", "565", ":1.42")
@@ -305,7 +307,7 @@ class TestAptInstall:
             patch("service.os.close"),
             patch("service.GLib.idle_add", side_effect=lambda fn: fn()),
         ):
-            success, msg = wired_service._run_apt_install("test-op", "565")
+            success, msg, *_ = wired_service._run_apt_install("test-op", "565")
 
         assert success is True
         assert "565" in msg
@@ -326,7 +328,7 @@ class TestAptInstall:
             patch("service.os.close"),
             patch("service.GLib.idle_add", side_effect=lambda fn: fn()),
         ):
-            success, msg = wired_service._run_apt_install("test-op", "565")
+            success, msg, *_ = wired_service._run_apt_install("test-op", "565")
 
         assert success is False
         assert "Package not found" in msg
@@ -340,7 +342,7 @@ class TestAptInstall:
             patch("service.os.pipe", return_value=(read_fd, write_fd)),
             patch("service.os.close"),
         ):
-            success, msg = wired_service._run_apt_install("test-op", "565")
+            success, msg, *_ = wired_service._run_apt_install("test-op", "565")
 
         assert success is False
         assert "not found" in msg or "not executable" in msg
@@ -354,7 +356,7 @@ class TestAptInstall:
             patch("service.os.pipe", return_value=(read_fd, write_fd)),
             patch("service.os.close"),
         ):
-            success, msg = wired_service._run_apt_install("test-op", "565")
+            success, msg, *_ = wired_service._run_apt_install("test-op", "565")
 
         assert success is False
         assert "not found" in msg or "not executable" in msg
@@ -386,7 +388,7 @@ class TestAptInstall:
             patch("service.time.monotonic", side_effect=fake_monotonic),
             patch("service.GLib.idle_add", side_effect=lambda fn: fn()),
         ):
-            success, msg = wired_service._run_apt_install("test-op", "565")
+            success, msg, *_ = wired_service._run_apt_install("test-op", "565")
 
         assert success is False
         assert "timed out" in msg
@@ -481,7 +483,7 @@ class TestSignalEmission:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")):
+        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         signal_names = [c[0][3] for c in mock_connection.emit_signal.call_args_list]
@@ -493,7 +495,9 @@ class TestSignalEmission:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(False, "err")):
+        with patch.object(
+            wired_service, "_run_apt_install", return_value=(False, "err", 1, False)
+        ):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         signal_names = [c[0][3] for c in mock_connection.emit_signal.call_args_list]
@@ -518,7 +522,7 @@ class TestAuditLogging:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")):
+        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         import json
@@ -538,7 +542,9 @@ class TestAuditLogging:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(False, "E: broken")):
+        with patch.object(
+            wired_service, "_run_apt_install", return_value=(False, "E: broken", 1, False)
+        ):
             _run_do_install(wired_service, "testop", "565", ":1.42")
 
         import json
@@ -558,7 +564,7 @@ class TestAuditLogging:
         wired_service._operation_in_progress = True
         wired_service._current_op_id = "testop"
 
-        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok")):
+        with patch.object(wired_service, "_run_apt_install", return_value=(True, "ok", 0, False)):
             _run_do_install(wired_service, "testop", "565", ":1.99")
 
         import json

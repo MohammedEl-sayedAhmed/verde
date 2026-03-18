@@ -11,6 +11,7 @@ configure_file(
 
 daemon_sources = [
   '__init__.py',
+  'apt_errors.py',
   'audit.py',
   'degraded_states.py',
   'driver_manager.py',

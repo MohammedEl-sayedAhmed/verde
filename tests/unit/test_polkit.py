@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 # verde_daemon package registration is handled by tests/conftest.py
-from polkit import METHOD_ACTION_MAP, check_authorization
+from polkit import METHOD_ACTION_MAP, PolkitAgentMissing, check_authorization
 
 # ===================================================================
 # METHOD_ACTION_MAP completeness
@@ -17,6 +19,7 @@ class TestMethodActionMap:
     EXPECTED_METHODS: ClassVar[set[str]] = {
         "InstallDriver",
         "RollbackDriver",
+        "RepairDpkg",
         "ListSnapshots",
         "FixSuspend",
         "FixHibernate",
@@ -28,12 +31,13 @@ class TestMethodActionMap:
         "GetPowerStatus",
     }
 
-    def test_all_11_methods_mapped(self):
+    def test_all_12_methods_mapped(self):
         assert set(METHOD_ACTION_MAP.keys()) == self.EXPECTED_METHODS
 
     def test_driver_methods_map_to_driver_manage(self):
         assert METHOD_ACTION_MAP["InstallDriver"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["RollbackDriver"] == "com.verde.driver.manage"
+        assert METHOD_ACTION_MAP["RepairDpkg"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["ListSnapshots"] == "com.verde.driver.manage"
 
     def test_power_methods_map_to_power_manage(self):
@@ -172,3 +176,57 @@ class TestCheckAuthorization:
         variant_without = proxy.call_sync.call_args[0][1]
         flags_without = variant_without.get_child_value(3).get_uint32()
         assert flags_without == 0
+
+
+# ===================================================================
+# PolkitAgentMissing detection (P-9)
+# ===================================================================
+
+
+class TestPolkitAgentMissing:
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_no_authentication_agent(self, mock_proxy_class):
+        """GLib.Error mentioning 'authentication agent' raises PolkitAgentMissing."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "No authentication agent found", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitAgentMissing):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_no_agent_message(self, mock_proxy_class):
+        """GLib.Error with 'no agent' raises PolkitAgentMissing."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "no agent is available for the caller", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitAgentMissing):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    @patch("polkit.Gio.DBusProxy")
+    def test_other_glib_error_returns_false(self, mock_proxy_class):
+        """GLib.Error without agent message returns False (not PolkitAgentMissing)."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "Connection refused", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        assert check_authorization(conn, ":1.42", "com.verde.monitor") is False
+
+    def test_polkit_agent_missing_is_exception(self):
+        """PolkitAgentMissing is a proper Exception subclass."""
+        exc = PolkitAgentMissing("test message")
+        assert isinstance(exc, Exception)
+        assert str(exc) == "test message"

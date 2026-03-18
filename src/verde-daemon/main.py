@@ -106,6 +106,19 @@ def main() -> int:
     )
     service.start()
 
+    # Check for interrupted operations on startup (FR48)
+    from verde_daemon.apt_errors import detect_interrupted_operation
+
+    interrupted = detect_interrupted_operation()
+    if interrupted is not None:
+        logger.warning(
+            "Interrupted operation detected on startup: %s — %s",
+            interrupted.title,
+            interrupted.description,
+        )
+        # The GUI will query this on connection; store for later retrieval
+        service.set_startup_error(interrupted)
+
     loop.run()
 
     # Cleanup
