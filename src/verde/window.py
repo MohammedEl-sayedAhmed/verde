@@ -43,7 +43,7 @@ if _has_ui_resource():
 
 else:
 
-    class VerdeWindow(Adw.ApplicationWindow):
+    class VerdeWindow(Adw.ApplicationWindow):  # type: ignore[no-redef]
         """Main window built programmatically (blueprint-compiler not available)."""
 
         __gtype_name__ = "VerdeWindow"
