@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import pathlib
+import select
+import subprocess
+import threading
+import time
+import uuid
 from collections.abc import Callable
 
 from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
-from verde_daemon.audit import AuditLogger
+from verde_daemon.audit import OP_INSTALL_DRIVER, AuditLogger
 from verde_daemon.degraded_states import (
     DegradedState,
     build_state_info,
@@ -69,6 +76,8 @@ class VerdeService:
         loop: GLib.MainLoop,
         on_idle_reset: Callable[[], None],
         *,
+        on_idle_hold: Callable[[], None] | None = None,
+        on_idle_release: Callable[[], None] | None = None,
         introspection_xml: str | None = None,
         xml_path: str | pathlib.Path | None = None,
         audit_logger: AuditLogger | None = None,
@@ -77,11 +86,17 @@ class VerdeService:
     ) -> None:
         self._loop = loop
         self._on_idle_reset = on_idle_reset
+        self._on_idle_hold = on_idle_hold or (lambda: None)
+        self._on_idle_release = on_idle_release or (lambda: None)
         self._audit = audit_logger
         self._connection: Gio.DBusConnection | None = None
         self._registration_id: int = 0
         self._owner_id: int = 0
         self._poll_source_id: int | None = None
+
+        # Concurrency guard for driver operations (FR40)
+        self._operation_in_progress: bool = False
+        self._current_op_id: str | None = None
 
         # NVML wrapper — injected for testing, created automatically otherwise
         if nvml is not None:
@@ -357,6 +372,11 @@ class VerdeService:
             self._dispatch_gpu_method(method_name, invocation)
             return
 
+        # Driver operation dispatch
+        if method_name == "InstallDriver":
+            self._dispatch_install_driver(parameters, invocation, sender)
+            return
+
         # Remaining methods — stubs until actual implementations
         invocation.return_dbus_error(
             "org.freedesktop.DBus.Error.UnknownMethod",
@@ -427,6 +447,296 @@ class VerdeService:
         except Exception as exc:
             log.exception("Internal error in GetPreflightCheck")
             invocation.return_dbus_error("com.verde.Manager.InternalError", str(exc))
+
+    # ------------------------------------------------------------------
+    # Driver operation dispatch (InstallDriver)
+    # ------------------------------------------------------------------
+
+    _APT_TIMEOUT_SECONDS = 600
+
+    def _dispatch_install_driver(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle InstallDriver: validate, guard, return op_id, spawn worker."""
+        version = parameters.get_child_value(0).get_string()
+
+        # Concurrency guard (FR40)
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                "Another operation is already in progress",
+            )
+            return
+
+        # Acquire guard and generate op_id
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+
+        # Return op_id immediately (NFR-PERF-13: <500ms)
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        # Spawn worker thread for async operation
+        thread = threading.Thread(
+            target=self._do_install,
+            args=(op_id, version, sender),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_install(self, op_id: str, version: str, sender: str) -> None:
+        """Worker thread: hold timer, inhibit, snapshot, apt, signals, audit."""
+        inhibitor_fd: int | None = None
+        try:
+            # Hold idle timer (IG-1)
+            GLib.idle_add(self._on_idle_hold)
+
+            # Audit: operation started
+            if self._audit:
+                self._audit.log(
+                    OP_INSTALL_DRIVER,
+                    {"driver": f"nvidia-driver-{version}"},
+                    sender,
+                    "started",
+                )
+
+            # Acquire systemd inhibitor lock (FR89)
+            inhibitor_fd = self._acquire_inhibitor_lock(f"Installing nvidia-driver-{version}")
+
+            # Snapshot stub (Story 3.1 will provide real implementation)
+            self._create_pre_install_snapshot(version)
+
+            # Run APT install with progress
+            success, message = self._run_apt_install(op_id, version)
+
+            # Emit completion signals
+            self._emit_signal("OperationComplete", "(sbs)", (op_id, success, message))
+            if success:
+                self._emit_signal(
+                    "RebootRequired",
+                    "(bs)",
+                    (True, "Reboot required to load new driver"),
+                )
+
+            # Audit: operation result
+            if self._audit:
+                self._audit.log(
+                    OP_INSTALL_DRIVER,
+                    {"driver": f"nvidia-driver-{version}"},
+                    sender,
+                    "success" if success else "failed",
+                    error=message if not success else None,
+                )
+
+        except Exception as exc:
+            log.exception("Unhandled error in install worker for %s", op_id)
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                (op_id, False, f"Internal error: {exc}"),
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_INSTALL_DRIVER,
+                    {"driver": f"nvidia-driver-{version}"},
+                    sender,
+                    "failed",
+                    error=str(exc),
+                )
+        finally:
+            # Release inhibitor lock
+            self._release_inhibitor_lock(inhibitor_fd)
+
+            # Release concurrency guard and idle timer on the main thread
+            # so all state mutations are serialized with D-Bus dispatch.
+            def _release_guard() -> bool:
+                self._operation_in_progress = False
+                self._current_op_id = None
+                self._on_idle_release()
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_release_guard)
+
+    # ------------------------------------------------------------------
+    # APT subprocess with Status-Fd progress (FR13, NFR-SEC-3)
+    # ------------------------------------------------------------------
+
+    def _run_apt_install(self, op_id: str, version: str) -> tuple[bool, str]:
+        """Run apt-get install with progress parsing. Returns (success, message)."""
+        read_fd, write_fd = os.pipe()
+        cmd = [
+            "apt-get",
+            "install",
+            "-y",
+            "-o",
+            f"APT::Status-Fd={write_fd}",
+            f"nvidia-driver-{version}",
+        ]
+
+        # P-2: ensure fds are closed on any Popen failure, not just FileNotFoundError
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                pass_fds=(write_fd,),
+            )
+        except OSError:
+            os.close(read_fd)
+            os.close(write_fd)
+            return (False, "apt-get not found or not executable")
+
+        os.close(write_fd)  # Close write end in parent
+
+        # P-3: Parse progress from Status-Fd pipe using select() with a
+        # deadline so we never block longer than _APT_TIMEOUT_SECONDS total.
+        deadline = time.monotonic() + self._APT_TIMEOUT_SECONDS
+        buf = ""
+        timed_out = False
+        try:
+            with os.fdopen(read_fd, "r") as status_stream:
+                fd_no = status_stream.fileno()
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    ready, _, _ = select.select([fd_no], [], [], remaining)
+                    if not ready:
+                        timed_out = True
+                        break
+                    chunk = os.read(fd_no, 4096)
+                    if not chunk:
+                        break  # EOF — child closed write end
+                    buf += chunk.decode(errors="replace")
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        line = line.strip()
+                        if line.startswith("pmstatus:"):
+                            parts = line.split(":", 3)
+                            if len(parts) >= 4:
+                                try:
+                                    percent = float(parts[2])
+                                    message = parts[3]
+                                    self._emit_signal(
+                                        "OperationProgress",
+                                        "(sds)",
+                                        (op_id, percent, message),
+                                    )
+                                except ValueError:
+                                    continue
+        except OSError:
+            log.warning("Error reading APT status pipe")
+
+        # Handle timeout: kill the process
+        if timed_out:
+            log.warning(
+                "APT install timed out after %ds, terminating",
+                self._APT_TIMEOUT_SECONDS,
+            )
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+            return (
+                False,
+                f"Installation timed out after {self._APT_TIMEOUT_SECONDS} seconds",
+            )
+
+        # Wait for process to finish (should already be done since pipe hit EOF)
+        try:
+            proc.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return (False, "Process did not exit after pipe closed")
+
+        if proc.returncode == 0:
+            return (True, f"Driver nvidia-driver-{version} installed successfully")
+
+        # P-4: Read stderr after process completion (safe — process is dead)
+        stderr = ""
+        if proc.stderr:
+            try:
+                stderr = proc.stderr.read().decode(errors="replace").strip()
+            except Exception:
+                stderr = "Unknown error"
+        return (False, stderr or f"apt-get exited with code {proc.returncode}")
+
+    # ------------------------------------------------------------------
+    # D-Bus signal emission (thread-safe via GLib.idle_add)
+    # ------------------------------------------------------------------
+
+    def _emit_signal(self, signal_name: str, variant_type: str, args: tuple) -> None:
+        """Schedule D-Bus signal emission on the GLib main loop."""
+
+        def _emit() -> bool:
+            if self._connection is not None:
+                self._connection.emit_signal(
+                    None,
+                    OBJECT_PATH,
+                    INTERFACE_NAME,
+                    signal_name,
+                    GLib.Variant(variant_type, args),
+                )
+            return GLib.SOURCE_REMOVE
+
+        GLib.idle_add(_emit)
+
+    # ------------------------------------------------------------------
+    # Systemd inhibitor lock (FR89)
+    # ------------------------------------------------------------------
+
+    def _acquire_inhibitor_lock(self, reason: str) -> int | None:
+        """Acquire systemd inhibitor lock via logind D-Bus API."""
+        if self._connection is None:
+            return None
+        try:
+            result = self._connection.call_with_unix_fd_list_sync(
+                "org.freedesktop.login1",
+                "/org/freedesktop/login1",
+                "org.freedesktop.login1.Manager",
+                "Inhibit",
+                GLib.Variant(
+                    "(ssss)",
+                    ("shutdown:sleep:idle", "verde-daemon", reason, "block"),
+                ),
+                GLib.VariantType("(h)"),
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+                None,
+            )
+            if result and result[1]:
+                idx = result[0].get_child_value(0).get_handle()
+                return result[1].get(idx)
+            return None
+        except Exception as exc:
+            log.warning("Failed to acquire inhibitor lock: %s", exc)
+            return None
+
+    @staticmethod
+    def _release_inhibitor_lock(fd: int | None) -> None:
+        """Release systemd inhibitor lock by closing the file descriptor."""
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+
+    # ------------------------------------------------------------------
+    # Snapshot stub (real implementation in Story 3.1)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _create_pre_install_snapshot(version: str) -> None:
+        """Create pre-install snapshot. Stub until Story 3.1."""
+        log.info(
+            "Snapshot stub: would create snapshot before installing nvidia-driver-%s", version
+        )
 
     # ------------------------------------------------------------------
     # GPU data builders
@@ -755,7 +1065,7 @@ class VerdeService:
         if property_name == "DaemonVersion":
             return GLib.Variant("s", __version__)
         if property_name == "OperationInProgress":
-            return GLib.Variant("b", False)
+            return GLib.Variant("b", self._operation_in_progress)
         return None
 
 

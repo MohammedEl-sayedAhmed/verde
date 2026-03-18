@@ -36,6 +36,18 @@ class _IdleTimer:
         """Alias for start — restarts the idle countdown."""
         self.start()
 
+    def hold(self) -> None:
+        """Suspend the idle timer — daemon must not exit during operations."""
+        if self._source_id is not None:
+            GLib.source_remove(self._source_id)
+            self._source_id = None
+        logger.debug("Idle timer held (operation in progress)")
+
+    def release(self) -> None:
+        """Resume the idle timer — restart countdown after operation."""
+        self.start()
+        logger.debug("Idle timer released (operation complete)")
+
     def cancel(self) -> None:
         """Cancel a pending timeout."""
         if self._source_id is not None:
@@ -87,6 +99,8 @@ def main() -> int:
     service = VerdeService(
         loop=loop,
         on_idle_reset=idle_timer.reset,
+        on_idle_hold=idle_timer.hold,
+        on_idle_release=idle_timer.release,
         xml_path=xml_path,
         audit_logger=audit_logger,
     )
