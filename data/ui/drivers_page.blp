@@ -1,0 +1,15 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $DriversPage: Adw.PreferencesPage {
+  title: _("Drivers");
+  icon-name: "application-x-firmware-symbolic";
+
+  Adw.PreferencesGroup {
+    Adw.StatusPage {
+      icon-name: "application-x-firmware-symbolic";
+      title: _("Drivers");
+      description: _("Driver management will appear here.");
+    }
+  }
+}

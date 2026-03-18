@@ -3,14 +3,31 @@ pkgdatadir = get_option('prefix') / get_option('datadir') / meson.project_name()
 # Blueprint compilation (.blp → .ui)
 blueprint_compiler = find_program('blueprint-compiler', required: false)
 if blueprint_compiler.found()
+  blueprint_sources = files(
+    'ui/window.blp',
+    'ui/dashboard_page.blp',
+    'ui/drivers_page.blp',
+    'ui/power_page.blp',
+    'ui/diagnostics_page.blp',
+  )
+
+  blueprint_outputs = [
+    'window.ui',
+    'dashboard_page.ui',
+    'drivers_page.ui',
+    'power_page.ui',
+    'diagnostics_page.ui',
+  ]
+
   blueprints = custom_target(
     'blueprints',
-    input: files('ui/window.blp'),
-    output: 'window.ui',
+    input: blueprint_sources,
+    output: blueprint_outputs,
     command: [
       blueprint_compiler,
-      'compile',
-      '--output', '@OUTPUT@',
+      'batch-compile',
+      '@OUTDIR@',
+      '@CURRENT_SOURCE_DIR@/ui',
       '@INPUT@',
     ],
   )

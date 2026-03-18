@@ -1,0 +1,15 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $DashboardPage: Adw.PreferencesPage {
+  title: _("Dashboard");
+  icon-name: "speedometer-symbolic";
+
+  Adw.PreferencesGroup {
+    Adw.StatusPage {
+      icon-name: "speedometer-symbolic";
+      title: _("Dashboard");
+      description: _("GPU monitoring will appear here.");
+    }
+  }
+}

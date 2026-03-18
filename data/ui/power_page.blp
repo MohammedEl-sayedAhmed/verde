@@ -1,0 +1,15 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $PowerPage: Adw.PreferencesPage {
+  title: _("Power");
+  icon-name: "battery-symbolic";
+
+  Adw.PreferencesGroup {
+    Adw.StatusPage {
+      icon-name: "battery-symbolic";
+      title: _("Power");
+      description: _("Power management will appear here.");
+    }
+  }
+}
