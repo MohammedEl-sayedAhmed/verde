@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import typing
 from typing import TYPE_CHECKING, ClassVar
 
 from gi.repository import Gio, GLib, GObject
@@ -117,7 +118,7 @@ class VerdeDBusClient(GObject.Object):
         """Retry connection callback."""
         self._retry_source_id = None
         self.connect_async()
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
 
     def close(self) -> None:
         """Clean up proxy, signal handlers, and cancel pending retries."""
@@ -157,7 +158,7 @@ class VerdeDBusClient(GObject.Object):
     def _update_reboot_state(self, required: bool, reason: str) -> bool:
         self._gpu_state._set_if_changed("reboot-required", required)
         self._gpu_state._set_if_changed("reboot-reason", reason)
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
 
     # ── Method calls ─────────────────────────────────────────────────
 
@@ -165,7 +166,7 @@ class VerdeDBusClient(GObject.Object):
         self,
         method_name: str,
         parameters: GLib.Variant | None,
-        callback: callable | None = None,
+        callback: typing.Callable[..., typing.Any] | None = None,
     ) -> None:
         """Call a D-Bus method asynchronously — never blocks the GUI thread.
 
