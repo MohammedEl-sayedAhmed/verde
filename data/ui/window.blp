@@ -1,0 +1,106 @@
+using Gtk 4.0;
+using Adw 1;
+
+template $VerdeWindow: Adw.ApplicationWindow {
+  default-width: 800;
+  default-height: 600;
+  title: "Verde";
+
+  content: Gtk.Box {
+    orientation: vertical;
+
+    Adw.HeaderBar {
+      [title]
+      Adw.ViewSwitcher view_switcher {
+        policy: wide;
+        stack: view_stack;
+      }
+    }
+
+    Adw.ViewStack view_stack {
+      Adw.ViewStackPage {
+        name: "dashboard";
+        title: "Dashboard";
+        icon-name: "speedometer-symbolic";
+
+        child: Gtk.ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: Adw.Clamp {
+            maximum-size: 600;
+
+            child: Adw.StatusPage {
+              icon-name: "speedometer-symbolic";
+              title: "Dashboard";
+              description: "GPU monitoring will appear here.";
+            };
+          };
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "drivers";
+        title: "Drivers";
+        icon-name: "application-x-firmware-symbolic";
+
+        child: Gtk.ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: Adw.Clamp {
+            maximum-size: 600;
+
+            child: Adw.StatusPage {
+              icon-name: "application-x-firmware-symbolic";
+              title: "Drivers";
+              description: "Driver management will appear here.";
+            };
+          };
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "power";
+        title: "Power";
+        icon-name: "battery-symbolic";
+
+        child: Gtk.ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: Adw.Clamp {
+            maximum-size: 600;
+
+            child: Adw.StatusPage {
+              icon-name: "battery-symbolic";
+              title: "Power";
+              description: "Power management will appear here.";
+            };
+          };
+        };
+      }
+
+      Adw.ViewStackPage {
+        name: "diagnostics";
+        title: "Diagnostics";
+        icon-name: "utilities-system-monitor-symbolic";
+
+        child: Gtk.ScrolledWindow {
+          hscrollbar-policy: never;
+
+          child: Adw.Clamp {
+            maximum-size: 600;
+
+            child: Adw.StatusPage {
+              icon-name: "utilities-system-monitor-symbolic";
+              title: "Diagnostics";
+              description: "System diagnostics will appear here.";
+            };
+          };
+        };
+      }
+    }
+
+    Adw.ViewSwitcherBar bottom_bar {
+      stack: view_stack;
+    }
+  };
+}

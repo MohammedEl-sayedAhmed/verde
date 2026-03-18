@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fallback GResource without Blueprint-compiled UI files.
+     Used when blueprint-compiler is not available. -->
+<gresources>
+  <gresource prefix="/com/verde/app">
+    <file>style.css</file>
+  </gresource>
+</gresources>

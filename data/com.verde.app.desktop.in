@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Verde
+Comment=NVIDIA GPU Manager for Ubuntu
+Exec=verde
+Icon=com.verde.app
+Terminal=false
+Type=Application
+Categories=System;Settings;HardwareSettings;
+Keywords=nvidia;gpu;driver;graphics;
+StartupNotify=true

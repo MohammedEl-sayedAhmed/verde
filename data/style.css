@@ -1,0 +1,16 @@
+.verde-status-good {
+  color: @success_color;
+}
+
+.verde-status-warn {
+  color: @warning_color;
+}
+
+.verde-status-crit {
+  color: @error_color;
+  font-weight: bold;
+}
+
+.verde-technical {
+  font-family: monospace;
+}

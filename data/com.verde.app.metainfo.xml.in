@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.verde.app</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>Verde</name>
+  <summary>NVIDIA GPU Manager for Ubuntu</summary>
+  <description>
+    <p>
+      Verde helps you manage your NVIDIA GPU on Ubuntu. Monitor GPU health,
+      install and switch drivers, fix suspend/hibernate issues, and generate
+      diagnostic reports — all from a simple, safe interface.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.verde.app.desktop</launchable>
+  <url type="homepage">https://github.com/verde-gpu/verde</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.1.0" date="2026-03-18">
+      <description><p>Initial release.</p></description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=com.verde.Manager
+Exec=@BINDIR@/verde-daemon
+User=root
+SystemdService=verde-daemon.service

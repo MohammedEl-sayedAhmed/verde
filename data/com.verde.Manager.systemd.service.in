@@ -1,0 +1,12 @@
+[Unit]
+Description=Verde GPU Manager Daemon
+After=dbus.service
+
+[Service]
+Type=dbus
+BusName=com.verde.Manager
+ExecStart=@BINDIR@/verde-daemon
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

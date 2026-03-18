@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="com.verde.app" path="/com/verde/app/">
+    <key type="i" name="polling-interval">
+      <range min="500" max="60000"/>
+      <default>2000</default>
+      <summary>GPU polling interval in milliseconds</summary>
+      <description>How often to refresh GPU statistics on the dashboard.</description>
+    </key>
+    <key type="(ii)" name="window-size">
+      <default>(800, 600)</default>
+      <summary>Window size</summary>
+      <description>Last saved window dimensions (width, height).</description>
+    </key>
+  </schema>
+</schemalist>
