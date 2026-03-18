@@ -11,10 +11,9 @@ template $DriversPage: Adw.PreferencesPage {
 
     Adw.Banner reboot_banner {
       title: _("Restart required to complete driver installation");
-      button-label: _("Restart\u2026");
+      button-label: _("Restart…");
       revealed: true;
 
-      [signal button-clicked]
       button-clicked => $_on_reboot_banner_clicked();
     }
   }
@@ -26,7 +25,7 @@ template $DriversPage: Adw.PreferencesPage {
     /* Shown when a driver is installed */
     Adw.ExpanderRow current_driver_expander {
       title: _("No Driver");
-      subtitle: _("Loading\u2026");
+      subtitle: _("Loading…");
       show-enable-switch: false;
       visible: false;
 
