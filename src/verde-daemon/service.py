@@ -10,6 +10,7 @@ from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
 from verde_daemon.audit import AuditLogger
+from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
 from verde_daemon.validators import (
     validate_driver_version,
@@ -23,6 +24,8 @@ BUS_NAME = "com.verde.Manager"
 OBJECT_PATH = "/com/verde/Manager"
 INTERFACE_NAME = "com.verde.Manager"
 
+_POLL_INTERVAL_SECONDS = 2
+
 # Methods that require parameter validation and which validator to use.
 # Maps method_name -> list of (param_index, validator_func) tuples.
 _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
@@ -30,6 +33,9 @@ _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
     "RollbackDriver": [(0, validate_snapshot_id)],
     "GetPreflightCheck": [(0, validate_operation_name)],
 }
+
+# Methods that return a{sv} GPU data — dispatched after Polkit auth.
+_GPU_DATA_METHODS = frozenset({"GetGPUInfo", "GetGPUStats", "GetCurrentDriver"})
 
 
 class VerdeService:
@@ -57,6 +63,7 @@ class VerdeService:
         introspection_xml: str | None = None,
         xml_path: str | pathlib.Path | None = None,
         audit_logger: AuditLogger | None = None,
+        nvml: NvmlWrapper | None = None,
     ) -> None:
         self._loop = loop
         self._on_idle_reset = on_idle_reset
@@ -64,6 +71,20 @@ class VerdeService:
         self._connection: Gio.DBusConnection | None = None
         self._registration_id: int = 0
         self._owner_id: int = 0
+        self._poll_source_id: int | None = None
+
+        # NVML wrapper — injected for testing, created automatically otherwise
+        if nvml is not None:
+            self._nvml = nvml
+        else:
+            self._nvml = NvmlWrapper()
+        self._nvml_available: bool = False
+        self._last_gpu_available: bool = False
+        try:
+            self._nvml_available = bool(self._nvml.initialize())
+            self._last_gpu_available = self._nvml_available
+        except Exception:
+            log.warning("NVML initialization failed — running in degraded mode")
 
         # Load introspection XML
         if introspection_xml is not None:
@@ -91,7 +112,8 @@ class VerdeService:
         )
 
     def stop(self) -> None:
-        """Release bus name and unregister object."""
+        """Release bus name, unregister object, and stop polling."""
+        self.stop_polling()
         if self._registration_id:
             if self._connection is not None:
                 try:
@@ -102,6 +124,64 @@ class VerdeService:
         if self._owner_id:
             Gio.bus_unown_name(self._owner_id)
             self._owner_id = 0
+        if self._nvml is not None:
+            try:
+                self._nvml.shutdown()
+            except Exception:
+                log.debug("NVML shutdown failed")
+
+    # ------------------------------------------------------------------
+    # Polling
+    # ------------------------------------------------------------------
+
+    def start_polling(self) -> None:
+        """Start periodic GPU stats polling and signal emission."""
+        if self._poll_source_id is not None:
+            return
+        self._poll_source_id = GLib.timeout_add_seconds(
+            _POLL_INTERVAL_SECONDS, self._poll_and_emit
+        )
+
+    def stop_polling(self) -> None:
+        """Stop the periodic polling timer."""
+        if self._poll_source_id is not None:
+            GLib.source_remove(self._poll_source_id)
+            self._poll_source_id = None
+
+    def _poll_and_emit(self) -> bool:
+        """Poll NVML and emit GPUStatsUpdated signal."""
+        if self._nvml is None:
+            return GLib.SOURCE_CONTINUE
+
+        try:
+            stats = self._build_gpu_stats()
+
+            # GPU disappearance detection
+            current_available = stats.get("available")
+            if current_available is not None:
+                is_available = current_available.get_boolean()
+            else:
+                is_available = True
+            if self._last_gpu_available and not is_available:
+                stats["gpu_lost"] = GLib.Variant("b", True)
+                stats["gpu_lost_reason"] = GLib.Variant(
+                    "s",
+                    stats.get("reason", GLib.Variant("s", "GPU disappeared")).get_string(),
+                )
+            self._last_gpu_available = is_available
+
+            if self._connection is not None:
+                self._connection.emit_signal(
+                    None,
+                    OBJECT_PATH,
+                    INTERFACE_NAME,
+                    "GPUStatsUpdated",
+                    GLib.Variant.new_tuple(GLib.Variant("a{sv}", stats)),
+                )
+            self._on_idle_reset()
+        except Exception:
+            log.exception("Error during GPU stats polling")
+        return GLib.SOURCE_CONTINUE
 
     # ------------------------------------------------------------------
     # Bus lifecycle callbacks
@@ -124,6 +204,7 @@ class VerdeService:
             None,  # set_property — all properties are read-only
         )
         log.info("D-Bus object registered at %s", OBJECT_PATH)
+        self.start_polling()
 
     def _on_name_acquired(
         self,
@@ -195,11 +276,228 @@ class VerdeService:
         # Reset idle timer on successful authorization
         self._on_idle_reset()
 
-        # Method dispatch — stubs until actual implementations in later stories
+        # GPU data method dispatch
+        if method_name in _GPU_DATA_METHODS:
+            self._dispatch_gpu_method(method_name, invocation)
+            return
+
+        # Remaining methods — stubs until actual implementations
         invocation.return_dbus_error(
             "org.freedesktop.DBus.Error.UnknownMethod",
             f"Method {method_name} is not yet implemented",
         )
+
+    def _dispatch_gpu_method(self, method_name: str, invocation: Gio.DBusMethodInvocation) -> None:
+        """Dispatch GPU data methods that return a{sv}."""
+        try:
+            if method_name == "GetGPUInfo":
+                result = self._build_gpu_info()
+            elif method_name == "GetGPUStats":
+                result = self._build_gpu_stats()
+            elif method_name == "GetCurrentDriver":
+                result = self._build_current_driver()
+            else:
+                invocation.return_dbus_error(
+                    "org.freedesktop.DBus.Error.UnknownMethod",
+                    f"Method {method_name} is not implemented",
+                )
+                return
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
+        except Exception as exc:
+            log.exception("Internal error in %s", method_name)
+            invocation.return_dbus_error(
+                "com.verde.Manager.InternalError",
+                str(exc),
+            )
+
+    # ------------------------------------------------------------------
+    # GPU data builders
+    # ------------------------------------------------------------------
+
+    def _build_gpu_info(self) -> dict[str, GLib.Variant]:
+        """Build GetGPUInfo response from NVML data."""
+        if not self._nvml_available:
+            return self._unavailable_response("NVIDIA driver not loaded")
+
+        info = self._nvml.get_all_gpu_info(0)
+        if info.get("handle") is Unavailable:
+            return self._unavailable_response("No GPU device found")
+
+        result: dict[str, GLib.Variant] = {
+            "available": GLib.Variant("b", True),
+        }
+
+        dc = self._nvml.device_count()
+        if dc is not None and dc is not Unavailable:
+            result["device_count"] = GLib.Variant("i", int(dc))
+        else:
+            result["device_count_available"] = GLib.Variant("b", False)
+
+        _set_str(result, "name", info.get("name"))
+        _set_str(result, "uuid", info.get("uuid"))
+        _set_str(result, "driver_version", info.get("driver_version"))
+        _set_str(result, "cuda_driver_version", info.get("cuda_driver_version"))
+        _set_int(result, "num_cores", info.get("num_cores"))
+        _set_bool(result, "ecc_mode", info.get("ecc_mode"))
+
+        # PCI info (nested dict)
+        pci = info.get("pci_info")
+        if pci is not None and pci is not Unavailable and isinstance(pci, dict):
+            _set_str(result, "pci_bus_id", pci.get("bus_id"))
+            _set_uint(result, "pci_domain", pci.get("domain"))
+            _set_uint(result, "pci_bus", pci.get("bus"))
+            _set_uint(result, "pci_device", pci.get("device"))
+        else:
+            result["pci_info_available"] = GLib.Variant("b", False)
+
+        # Compute capability (tuple)
+        cc = info.get("compute_capability")
+        if cc is not None and cc is not Unavailable and isinstance(cc, tuple) and len(cc) >= 2:
+            result["compute_capability_major"] = GLib.Variant("i", cc[0])
+            result["compute_capability_minor"] = GLib.Variant("i", cc[1])
+        else:
+            result["compute_capability_available"] = GLib.Variant("b", False)
+
+        # Driver type
+        result["driver_type"] = GLib.Variant("s", self._detect_driver_type())
+
+        return result
+
+    def _build_gpu_stats(self) -> dict[str, GLib.Variant]:
+        """Build GetGPUStats response from NVML data."""
+        if not self._nvml_available:
+            return self._unavailable_response("NVIDIA driver not loaded")
+
+        stats = self._nvml.get_all_gpu_stats(0)
+        if stats.get("handle") is Unavailable:
+            return self._unavailable_response("No GPU device found")
+
+        result: dict[str, GLib.Variant] = {"available": GLib.Variant("b", True)}
+
+        _set_int(result, "temperature", stats.get("temperature"))
+        _set_int(result, "clock_graphics", stats.get("clock_graphics"))
+        _set_int(result, "clock_sm", stats.get("clock_sm"))
+        _set_int(result, "clock_mem", stats.get("clock_mem"))
+        _set_int(result, "performance_state", stats.get("performance_state"))
+        _set_int64(result, "power_usage", stats.get("power_usage"))
+        _set_int64(result, "power_limit", stats.get("power_limit"))
+        _set_int64(result, "memory_errors", stats.get("memory_errors"))
+
+        # Throttle reasons bitmask (uint64)
+        tr = stats.get("throttle_reasons")
+        if tr is not None and tr is not Unavailable:
+            result["throttle_reasons"] = GLib.Variant("t", tr)
+        else:
+            result["throttle_reasons_available"] = GLib.Variant("b", False)
+
+        # Memory info (flattened from nested dict)
+        mem = stats.get("memory")
+        if mem is not None and mem is not Unavailable and isinstance(mem, dict):
+            _set_int64(result, "memory_total", mem.get("total"))
+            _set_int64(result, "memory_used", mem.get("used"))
+            _set_int64(result, "memory_free", mem.get("free"))
+        else:
+            result["memory_available"] = GLib.Variant("b", False)
+
+        # Utilization (flattened from nested dict)
+        util = stats.get("utilization")
+        if util is not None and util is not Unavailable and isinstance(util, dict):
+            _set_int(result, "utilization_gpu", util.get("gpu"))
+            _set_int(result, "utilization_memory", util.get("memory"))
+        else:
+            result["utilization_available"] = GLib.Variant("b", False)
+
+        # Process list
+        procs = stats.get("processes")
+        if procs is not None and procs is not Unavailable:
+            proc_variants = []
+            for p in procs:
+                pv: dict[str, GLib.Variant] = {}
+                if "pid" in p:
+                    pv["pid"] = GLib.Variant("u", p["pid"])
+                if "used_gpu_memory" in p:
+                    pv["used_gpu_memory"] = GLib.Variant("x", p["used_gpu_memory"])
+                if "type" in p:
+                    pv["type"] = GLib.Variant("s", p["type"])
+                proc_variants.append(pv)
+            result["processes"] = GLib.Variant("aa{sv}", proc_variants)
+            result["process_count"] = GLib.Variant("i", len(proc_variants))
+        else:
+            result["processes"] = GLib.Variant("aa{sv}", [])
+            result["process_count"] = GLib.Variant("i", 0)
+
+        return result
+
+    def _build_current_driver(self) -> dict[str, GLib.Variant]:
+        """Build GetCurrentDriver response."""
+        driver_type = self._detect_driver_type()
+        reboot_required, reboot_reason = self._detect_reboot_required()
+
+        if not self._nvml_available:
+            resp = self._unavailable_response("NVIDIA driver not loaded")
+            resp["driver_type"] = GLib.Variant("s", driver_type)
+            resp["reboot_required"] = GLib.Variant("b", reboot_required)
+            resp["reboot_reason"] = GLib.Variant("s", reboot_reason)
+            return resp
+
+        result: dict[str, GLib.Variant] = {
+            "available": GLib.Variant("b", True),
+            "driver_type": GLib.Variant("s", driver_type),
+            "reboot_required": GLib.Variant("b", reboot_required),
+            "reboot_reason": GLib.Variant("s", reboot_reason),
+        }
+
+        version = self._nvml.get_driver_version()
+        if version is not Unavailable:
+            result["driver_version"] = GLib.Variant("s", version)
+        else:
+            result["driver_version_available"] = GLib.Variant("b", False)
+
+        return result
+
+    @staticmethod
+    def _unavailable_response(reason: str) -> dict[str, GLib.Variant]:
+        """Build a graceful degradation response."""
+        return {
+            "available": GLib.Variant("b", False),
+            "reason": GLib.Variant("s", reason),
+        }
+
+    # ------------------------------------------------------------------
+    # Driver and reboot detection
+    # ------------------------------------------------------------------
+
+    def _detect_driver_type(self) -> str:
+        """Detect current GPU driver: 'proprietary', 'nouveau', or 'none'."""
+        if self._nvml_available:
+            version = self._nvml.get_driver_version()
+            if version is not Unavailable:
+                return "proprietary"
+
+        nouveau_initstate = pathlib.Path("/sys/module/nouveau/initstate")
+        try:
+            if nouveau_initstate.exists() and nouveau_initstate.read_text().strip() == "live":
+                return "nouveau"
+        except OSError:
+            pass
+
+        return "none"
+
+    @staticmethod
+    def _detect_reboot_required() -> tuple[bool, str]:
+        """Check if system reboot is required."""
+        reboot_file = pathlib.Path("/var/run/reboot-required")
+        if reboot_file.exists():
+            pkgs_file = pathlib.Path("/var/run/reboot-required.pkgs")
+            try:
+                if pkgs_file.exists():
+                    pkgs = pkgs_file.read_text()
+                    if "nvidia" in pkgs.lower():
+                        return (True, "NVIDIA driver update requires reboot")
+            except OSError:
+                pass
+            return (True, "System reboot required")
+        return (False, "")
 
     # ------------------------------------------------------------------
     # D-Bus property handler
@@ -218,3 +516,48 @@ class VerdeService:
         if property_name == "OperationInProgress":
             return GLib.Variant("b", False)
         return None
+
+
+# ------------------------------------------------------------------
+# Variant helper functions (module-level for testability)
+# ------------------------------------------------------------------
+
+
+def _set_str(d: dict, key: str, value: object) -> None:
+    """Set a string variant, or mark unavailable."""
+    if value is not None and value is not Unavailable:
+        d[key] = GLib.Variant("s", str(value))
+    else:
+        d[f"{key}_available"] = GLib.Variant("b", False)
+
+
+def _set_int(d: dict, key: str, value: object) -> None:
+    """Set an int32 variant, or mark unavailable."""
+    if value is not None and value is not Unavailable:
+        d[key] = GLib.Variant("i", int(value))
+    else:
+        d[f"{key}_available"] = GLib.Variant("b", False)
+
+
+def _set_int64(d: dict, key: str, value: object) -> None:
+    """Set an int64 variant (for large values like memory bytes)."""
+    if value is not None and value is not Unavailable:
+        d[key] = GLib.Variant("x", int(value))
+    else:
+        d[f"{key}_available"] = GLib.Variant("b", False)
+
+
+def _set_uint(d: dict, key: str, value: object) -> None:
+    """Set a uint32 variant, or mark unavailable."""
+    if value is not None and value is not Unavailable:
+        d[key] = GLib.Variant("u", int(value))
+    else:
+        d[f"{key}_available"] = GLib.Variant("b", False)
+
+
+def _set_bool(d: dict, key: str, value: object) -> None:
+    """Set a boolean variant, or mark unavailable."""
+    if value is not None and value is not Unavailable:
+        d[key] = GLib.Variant("b", bool(value))
+    else:
+        d[f"{key}_available"] = GLib.Variant("b", False)
