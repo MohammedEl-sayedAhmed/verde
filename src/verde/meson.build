@@ -25,6 +25,7 @@ verde_sources = [
   'widgets/driver_card.py',
   'widgets/preflight_banner.py',
   'widgets/progress_overlay.py',
+  'widgets/snapshot_row.py',
 ]
 
 install_data(verde_sources, install_dir: moduledir, preserve_path: true)

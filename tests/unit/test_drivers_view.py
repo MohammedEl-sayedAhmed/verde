@@ -178,29 +178,91 @@ class TestSnapshotsPopulation:
         drivers_page._populate_snapshots([])
         assert drivers_page._no_snapshots_status.get_visible() is True
 
+    def test_empty_snapshots_title_matches_ac3(self, drivers_page):
+        """AC#3: Empty state shows 'No Snapshots Available'."""
+        drivers_page._populate_snapshots([])
+        assert drivers_page._no_snapshots_status.get_title() == "No Snapshots Available"
+        assert "automatically" in drivers_page._no_snapshots_status.get_description()
+
     def test_snapshots_list_hides_status_page(self, drivers_page):
         drivers_page._populate_snapshots(
             [
-                {"name": "pre-install-565", "date": "2026-03-18"},
+                {
+                    "id": "20260318T143000_nvidia-565-ab01",
+                    "timestamp": "2026-03-18T14:30:00+00:00",
+                    "driver_version": "565",
+                    "kernel_version": "6.8.0",
+                    "packages": ["nvidia-driver-565=565.57"],
+                    "dkms_status": "installed",
+                    "file_size": 1024,
+                    "sha256": "abc123",
+                },
             ]
         )
         assert drivers_page._no_snapshots_status.get_visible() is False
 
     def test_snapshots_clears_previous_rows(self, drivers_page):
-        """P-1: Snapshot rows must be cleared before repopulating."""
-        drivers_page._populate_snapshots(
-            [
-                {"name": "snap-1", "date": "2026-03-17"},
-            ]
-        )
+        snap1 = {
+            "id": "20260317T100000_nvidia-560-ab01",
+            "timestamp": "2026-03-17T10:00:00+00:00",
+            "driver_version": "560",
+            "file_size": 512,
+        }
+        snap2 = {
+            "id": "20260318T100000_nvidia-565-ab01",
+            "timestamp": "2026-03-18T10:00:00+00:00",
+            "driver_version": "565",
+            "file_size": 512,
+        }
+        snap3 = {
+            "id": "20260319T100000_nvidia-570-ab01",
+            "timestamp": "2026-03-19T10:00:00+00:00",
+            "driver_version": "570",
+            "file_size": 512,
+        }
+        drivers_page._populate_snapshots([snap1])
         assert len(drivers_page._snapshot_rows) == 1
-        drivers_page._populate_snapshots(
-            [
-                {"name": "snap-2", "date": "2026-03-18"},
-                {"name": "snap-3", "date": "2026-03-18"},
-            ]
-        )
+        drivers_page._populate_snapshots([snap2, snap3])
         assert len(drivers_page._snapshot_rows) == 2
+
+    def test_snapshots_storage_summary_displayed(self, drivers_page):
+        """AC#5: Total storage usage shown in group description."""
+        snaps = [
+            {
+                "id": "20260318T143000_nvidia-560-ab01",
+                "timestamp": "2026-03-18T14:30:00+00:00",
+                "driver_version": "560",
+                "file_size": 4096,
+            },
+            {
+                "id": "20260319T100000_nvidia-565-ab01",
+                "timestamp": "2026-03-19T10:00:00+00:00",
+                "driver_version": "565",
+                "file_size": 8300,
+            },
+        ]
+        drivers_page._populate_snapshots(snaps)
+        desc = drivers_page._snapshots_group.get_description()
+        assert "2 snapshots" in desc
+        assert "KB" in desc
+
+    def test_snapshot_rows_are_expander_rows(self, drivers_page):
+        """AC#2: Snapshot rows use Adw.ExpanderRow for progressive disclosure."""
+        snaps = [
+            {
+                "id": "20260318T143000_nvidia-560-ab01",
+                "timestamp": "2026-03-18T14:30:00+00:00",
+                "driver_version": "560",
+                "kernel_version": "6.8.0",
+                "packages": ["nvidia-driver-560=560.35"],
+                "dkms_status": "installed",
+                "file_size": 1024,
+                "sha256": "abc123",
+            },
+        ]
+        drivers_page._populate_snapshots(snaps)
+        assert len(drivers_page._snapshot_rows) == 1
+        assert isinstance(drivers_page._snapshot_rows[0], Adw.ExpanderRow)
 
 
 # ===================================================================

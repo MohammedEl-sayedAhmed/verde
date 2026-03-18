@@ -82,7 +82,7 @@ def build_driver_row(
 
 # gettext stub — replaced by real gettext in app context
 try:
-    _("test")
+    _("test")  # type: ignore[used-before-def]
 except NameError:
     import builtins
 
@@ -91,4 +91,4 @@ except NameError:
         def _(s: str) -> str:
             return s
 
-        builtins._ = _
+        builtins._ = _  # type: ignore[attr-defined]

@@ -27,6 +27,7 @@ class TestMethodActionMap:
         "RollbackDriver",
         "RepairDpkg",
         "ListSnapshots",
+        "DeleteSnapshot",
         "FixSuspend",
         "FixHibernate",
         "GenerateDiagnosticReport",
@@ -37,7 +38,7 @@ class TestMethodActionMap:
         "GetPowerStatus",
     }
 
-    def test_all_12_methods_mapped(self):
+    def test_all_methods_mapped(self):
         assert set(METHOD_ACTION_MAP.keys()) == self.EXPECTED_METHODS
 
     def test_driver_methods_map_to_driver_manage(self):
@@ -45,6 +46,7 @@ class TestMethodActionMap:
         assert METHOD_ACTION_MAP["RollbackDriver"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["RepairDpkg"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["ListSnapshots"] == "com.verde.driver.manage"
+        assert METHOD_ACTION_MAP["DeleteSnapshot"] == "com.verde.driver.manage"
 
     def test_power_methods_map_to_power_manage(self):
         assert METHOD_ACTION_MAP["FixSuspend"] == "com.verde.power.manage"

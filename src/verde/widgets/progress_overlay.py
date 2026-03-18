@@ -90,9 +90,9 @@ class OperationProgressPanel(Gtk.Box):
 
         def _pulse() -> bool:
             if not self._is_pulsing:
-                return GLib.SOURCE_REMOVE
+                return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
             self._progress_bar.pulse()
-            return GLib.SOURCE_CONTINUE
+            return GLib.SOURCE_CONTINUE  # type: ignore[no-any-return]
 
         self._pulse_source_id = GLib.timeout_add(200, _pulse)
 
@@ -148,7 +148,7 @@ class OperationProgressPanel(Gtk.Box):
 
 # gettext stub
 try:
-    _("test")
+    _("test")  # type: ignore[used-before-def]
 except NameError:
     import builtins
 
@@ -157,4 +157,4 @@ except NameError:
         def _(s: str) -> str:
             return s
 
-        builtins._ = _
+        builtins._ = _  # type: ignore[attr-defined]

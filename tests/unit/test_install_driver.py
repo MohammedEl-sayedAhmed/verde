@@ -49,8 +49,14 @@ def mock_audit(tmp_path):
 
 
 @pytest.fixture
-def service(mock_loop, idle_reset, idle_hold, idle_release, mock_audit):
+def service(mock_loop, idle_reset, idle_hold, idle_release, mock_audit, tmp_path):
     from service import VerdeService
+    from snapshot_manager import SnapshotManager
+
+    snap_mgr = SnapshotManager(
+        snapshot_dir=tmp_path / "snapshots",
+        audit_logger=mock_audit,
+    )
 
     return VerdeService(
         loop=mock_loop,
@@ -59,6 +65,7 @@ def service(mock_loop, idle_reset, idle_hold, idle_release, mock_audit):
         on_idle_release=idle_release,
         introspection_xml=_XML,
         audit_logger=mock_audit,
+        snapshot_manager=snap_mgr,
     )
 
 
@@ -531,11 +538,10 @@ class TestAuditLogging:
         assert log_file.exists()
         lines = log_file.read_text().strip().split("\n")
         ops = [json.loads(line) for line in lines]
-        results = [e["result"] for e in ops]
+        install_ops = [e for e in ops if e["operation"] == OP_INSTALL_DRIVER]
+        results = [e["result"] for e in install_ops]
         assert "started" in results
         assert "success" in results
-        # All entries should be INSTALL_DRIVER
-        assert all(e["operation"] == OP_INSTALL_DRIVER for e in ops)
 
     def test_audit_logs_start_and_failure(self, wired_service, mock_audit):
         """Audit logger records start and failure entries with error."""
@@ -572,7 +578,8 @@ class TestAuditLogging:
         log_file = mock_audit._log_file
         lines = log_file.read_text().strip().split("\n")
         ops = [json.loads(line) for line in lines]
-        assert all(e["caller"] == ":1.99" for e in ops)
+        install_ops = [e for e in ops if e["operation"] == OP_INSTALL_DRIVER]
+        assert all(e["caller"] == ":1.99" for e in install_ops)
 
 
 # ===================================================================

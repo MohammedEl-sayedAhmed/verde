@@ -40,6 +40,7 @@ from verde_daemon.polkit import (
     check_authorization,
 )
 from verde_daemon.preflight import PreflightChecker
+from verde_daemon.snapshot_manager import SnapshotManager
 from verde_daemon.validators import (
     validate_driver_version,
     validate_operation_name,
@@ -59,6 +60,7 @@ _POLL_INTERVAL_SECONDS = 2
 _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
     "InstallDriver": [(0, validate_driver_version)],
     "RollbackDriver": [(0, validate_snapshot_id)],
+    "DeleteSnapshot": [(0, validate_snapshot_id)],
 }
 
 # Methods that return a{sv} GPU data — dispatched after Polkit auth.
@@ -96,6 +98,7 @@ class VerdeService:
         audit_logger: AuditLogger | None = None,
         nvml: NvmlWrapper | None = None,
         driver_manager: DriverManager | None = None,
+        snapshot_manager: SnapshotManager | None = None,
     ) -> None:
         self._loop = loop
         self._on_idle_reset = on_idle_reset
@@ -144,6 +147,11 @@ class VerdeService:
 
         # Pre-flight checker
         self._preflight = PreflightChecker()
+
+        # Snapshot manager (Story 3.1/3.2)
+        self._snapshot_manager = snapshot_manager or SnapshotManager(
+            audit_logger=audit_logger,
+        )
 
         # Degraded state tracking — re-detected each poll cycle
         self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
@@ -430,6 +438,14 @@ class VerdeService:
             self._dispatch_install_driver(parameters, invocation, sender)
             return
 
+        # Snapshot management (Story 3.2)
+        if method_name == "ListSnapshots":
+            self._dispatch_list_snapshots(invocation)
+            return
+        if method_name == "DeleteSnapshot":
+            self._dispatch_delete_snapshot(parameters, invocation, sender)
+            return
+
         # Repair dpkg (FR15 — Story 2.5)
         if method_name == "RepairDpkg":
             self._dispatch_repair_dpkg(invocation, sender)
@@ -505,6 +521,72 @@ class VerdeService:
         except Exception as exc:
             log.exception("Internal error in GetPreflightCheck")
             invocation.return_dbus_error("com.verde.Manager.InternalError", str(exc))
+
+    # ------------------------------------------------------------------
+    # Snapshot management dispatch (Story 3.2)
+    # ------------------------------------------------------------------
+
+    def _dispatch_list_snapshots(self, invocation: Gio.DBusMethodInvocation) -> None:
+        """Handle ListSnapshots: return aa{sv} of snapshot metadata."""
+        try:
+            snapshots = self._snapshot_manager.list_snapshots()
+            variant_list: list[dict[str, GLib.Variant]] = []
+            for snap in snapshots:
+                op = snap.get("operation") or {}
+                if not isinstance(op, dict):
+                    op = {}
+                target_driver = op.get("target_driver", "")
+                packages = snap.get("driver_packages", [])
+                package_strings = [f"{p.get('name', '')}={p.get('version', '')}" for p in packages]
+                dkms_modules = snap.get("dkms_modules", [])
+                dkms_status = dkms_modules[0].get("status", "") if dkms_modules else ""
+
+                variant_list.append(
+                    {
+                        "id": GLib.Variant("s", snap.get("snapshot_id", "")),
+                        "timestamp": GLib.Variant("s", snap.get("timestamp", "")),
+                        "driver_version": GLib.Variant("s", target_driver),
+                        "kernel_version": GLib.Variant("s", snap.get("kernel_version", "")),
+                        "packages": GLib.Variant("as", package_strings),
+                        "dkms_status": GLib.Variant("s", dkms_status),
+                        "file_size": GLib.Variant("x", snap.get("file_size", 0)),
+                        "sha256": GLib.Variant("s", snap.get("sha256", "")),
+                    }
+                )
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("aa{sv}", variant_list)))
+        except Exception:
+            log.exception("Internal error in ListSnapshots")
+            invocation.return_dbus_error("com.verde.Manager.InternalError", "Internal error")
+
+    def _dispatch_delete_snapshot(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle DeleteSnapshot: validate ID, delete file, audit, return success."""
+        snapshot_id = parameters.get_child_value(0).get_string()
+        try:
+            self._snapshot_manager.delete_snapshot(snapshot_id)
+        except FileNotFoundError:
+            invocation.return_dbus_error(
+                "com.verde.Error.SnapshotNotFound",
+                f"Snapshot {snapshot_id!r} not found",
+            )
+            return
+        except Exception:
+            log.exception("Internal error in DeleteSnapshot")
+            invocation.return_dbus_error("com.verde.Manager.InternalError", "Internal error")
+            return
+
+        if self._audit:
+            self._audit.log(
+                "DELETE_SNAPSHOT",
+                {"snapshot_id": snapshot_id},
+                sender,
+                "success",
+            )
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("b", True)))
 
     # ------------------------------------------------------------------
     # Driver operation dispatch (InstallDriver)
@@ -1034,12 +1116,13 @@ class VerdeService:
     # Snapshot stub (real implementation in Story 3.1)
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _create_pre_install_snapshot(version: str) -> None:
-        """Create pre-install snapshot. Stub until Story 3.1."""
-        log.info(
-            "Snapshot stub: would create snapshot before installing nvidia-driver-%s", version
-        )
+    def _create_pre_install_snapshot(self, version: str) -> None:
+        """Create pre-install snapshot before driver operations."""
+        try:
+            sid = self._snapshot_manager.create_snapshot("driver_install", version, "system")
+            log.info("Pre-install snapshot created: %s", sid)
+        except Exception as exc:
+            log.warning("Failed to create pre-install snapshot: %s", exc)
 
     # ------------------------------------------------------------------
     # GPU data builders

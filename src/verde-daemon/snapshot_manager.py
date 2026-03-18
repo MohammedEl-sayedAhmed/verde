@@ -383,6 +383,7 @@ class SnapshotManager:
             if path.name.startswith(".tmp_"):
                 continue
             try:
+                file_size = path.stat().st_size
                 with open(path) as f:
                     data = json.load(f)
                 snapshots.append(
@@ -393,6 +394,9 @@ class SnapshotManager:
                         "driver_packages": data.get("driver_packages", []),
                         "kernel_version": data.get("kernel_version", ""),
                         "schema_version": data.get("schema_version", 0),
+                        "dkms_modules": data.get("dkms_modules", []),
+                        "file_size": file_size,
+                        "sha256": data.get("sha256", ""),
                     }
                 )
             except (OSError, json.JSONDecodeError) as exc:

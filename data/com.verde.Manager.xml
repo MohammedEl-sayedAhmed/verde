@@ -46,6 +46,10 @@
     <method name="ListSnapshots">
       <arg name="snapshots" type="aa{sv}" direction="out"/>
     </method>
+    <method name="DeleteSnapshot">
+      <arg name="snapshot_id" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+    </method>
     <method name="FixSuspend">
       <arg name="op_id" type="s" direction="out"/>
     </method>

@@ -382,6 +382,64 @@ class TestSnapshotManagerAPI:
         mgr = SnapshotManager(snapshot_dir=tmp_path / "nonexistent")
         assert mgr.list_snapshots() == []
 
+    def test_list_snapshots_includes_file_size(self, tmp_path):
+        """list_snapshots returns file_size for each snapshot (Story 3.2 AC#7)."""
+        snap_dir = tmp_path / "snapshots"
+        snap_dir.mkdir(parents=True)
+
+        data = {
+            "schema_version": 1,
+            "snapshot_id": "20260318T143000_nvidia-560-ab01",
+            "timestamp": "2026-03-18T14:30:00+00:00",
+            "operation": {"type": "install", "target_driver": "560", "user": "u"},
+            "driver_packages": [
+                {"name": "nvidia-driver-560", "version": "560.35", "architecture": "amd64"},
+            ],
+            "kernel_version": "6.8.0-45-generic",
+            "dkms_modules": [
+                {"module": "nvidia", "version": "560.35", "kernel": "6.8.0", "status": "installed"}
+            ],
+            "config_files": {},
+            "sha256": "abc123",
+        }
+        path = snap_dir / "20260318T143000_nvidia-560-ab01.json"
+        path.write_text(json.dumps(data))
+
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+        result = mgr.list_snapshots()
+        assert len(result) == 1
+        assert "file_size" in result[0]
+        assert result[0]["file_size"] == path.stat().st_size
+        assert result[0]["sha256"] == "abc123"
+        assert result[0]["dkms_modules"] == data["dkms_modules"]
+
+    def test_list_snapshots_skips_corrupted_json(self, tmp_path):
+        """list_snapshots skips corrupted files with a warning, doesn't crash (Story 3.2 AC#7)."""
+        snap_dir = tmp_path / "snapshots"
+        snap_dir.mkdir(parents=True)
+
+        # Valid snapshot
+        valid_data = {
+            "schema_version": 1,
+            "snapshot_id": "20260318T143000_nvidia-560-ab01",
+            "timestamp": "2026-03-18T14:30:00+00:00",
+            "operation": {"type": "install", "target_driver": "560", "user": "u"},
+            "driver_packages": [],
+            "kernel_version": "6.8.0",
+            "dkms_modules": [],
+            "config_files": {},
+            "sha256": "abc",
+        }
+        (snap_dir / "20260318T143000_nvidia-560-ab01.json").write_text(json.dumps(valid_data))
+
+        # Corrupted file
+        (snap_dir / "20260319T100000_nvidia-565-ff00.json").write_text("not json {{{")
+
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+        result = mgr.list_snapshots()
+        assert len(result) == 1  # Only the valid one
+        assert result[0]["snapshot_id"] == "20260318T143000_nvidia-560-ab01"
+
     def test_delete_snapshot_removes_file(self, tmp_path):
         """delete_snapshot removes the file."""
         snap_dir = tmp_path / "snapshots"
@@ -512,6 +570,20 @@ class TestTargetDriverValidation:
 # ===================================================================
 # P-2: Audit log on failure paths
 # ===================================================================
+
+
+class TestDeleteSnapshotAudit:
+    def test_delete_nonexistent_raises_not_found(self, tmp_path):
+        """delete_snapshot raises FileNotFoundError for missing snapshots."""
+        mgr = SnapshotManager(snapshot_dir=tmp_path / "snapshots")
+        with pytest.raises(FileNotFoundError):
+            mgr.delete_snapshot("20260318T143000_nvidia-560-ab01")
+
+    def test_delete_rejects_invalid_id(self, tmp_path):
+        """delete_snapshot raises InvalidSnapshotId for malformed IDs."""
+        mgr = SnapshotManager(snapshot_dir=tmp_path / "snapshots")
+        with pytest.raises(InvalidSnapshotId):
+            mgr.delete_snapshot("../../../etc/passwd")
 
 
 class TestAuditOnFailure:

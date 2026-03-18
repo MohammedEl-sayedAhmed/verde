@@ -20,6 +20,7 @@ METHOD_ACTION_MAP: dict[str, str] = {
     "RollbackDriver": "com.verde.driver.manage",
     "RepairDpkg": "com.verde.driver.manage",
     "ListSnapshots": "com.verde.driver.manage",
+    "DeleteSnapshot": "com.verde.driver.manage",
     "FixSuspend": "com.verde.power.manage",
     "FixHibernate": "com.verde.power.manage",
     "GenerateDiagnosticReport": "com.verde.diagnostics",

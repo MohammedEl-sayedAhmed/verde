@@ -12,6 +12,7 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from verde.widgets.driver_card import build_driver_row
 from verde.widgets.preflight_banner import PreflightPanel
 from verde.widgets.progress_overlay import OperationProgressPanel
+from verde.widgets.snapshot_row import build_snapshot_row
 
 if TYPE_CHECKING:
     from verde.dbus_client import VerdeDBusClient
@@ -22,7 +23,7 @@ log = logging.getLogger("verde.views.drivers")
 
 # gettext stub
 try:
-    _("test")
+    _("test")  # type: ignore[used-before-def]
 except NameError:
     import builtins
 
@@ -31,7 +32,7 @@ except NameError:
         def _(s: str) -> str:
             return s
 
-        builtins._ = _
+        builtins._ = _  # type: ignore[attr-defined]
 
 
 def _has_resource(path: str) -> bool:
@@ -150,9 +151,9 @@ class DriversPage(Adw.PreferencesPage):
 
         self._no_snapshots_status = Adw.StatusPage()
         self._no_snapshots_status.set_icon_name("drive-harddisk-symbolic")
-        self._no_snapshots_status.set_title(_("No Snapshots"))
+        self._no_snapshots_status.set_title(_("No Snapshots Available"))
         self._no_snapshots_status.set_description(
-            _("Driver snapshots will appear here after your first installation.")
+            _("Snapshots are created automatically before driver changes.")
         )
         self._snapshots_group.add(self._no_snapshots_status)
 
@@ -313,7 +314,7 @@ class DriversPage(Adw.PreferencesPage):
         version = data.get("version", "")
         if not version:
             self._show_no_driver()
-            return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         package = data.get("package", f"nvidia-driver-{version}")
         variant = data.get("variant", "proprietary")
@@ -348,12 +349,12 @@ class DriversPage(Adw.PreferencesPage):
             [_("Kernel Module: {}").format(kernel_val)],
         )
 
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _show_no_driver(self) -> bool:
         self._current_driver_expander.set_visible(False)
         self._no_driver_status.set_visible(True)
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _populate_available_drivers(self, drivers: list, metadata: dict | None = None) -> bool:
         """Populate Available Drivers group from D-Bus response."""
@@ -372,13 +373,13 @@ class DriversPage(Adw.PreferencesPage):
 
         if run_detected:
             self._show_run_file_banner(run_message)
-            return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         self._run_file_banner.set_revealed(False)
 
         if not drivers:
             self._show_no_drivers_available()
-            return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         self._no_drivers_status.set_visible(False)
 
@@ -393,7 +394,7 @@ class DriversPage(Adw.PreferencesPage):
             self._available_drivers_group.add(row)
             self._driver_rows.append(row)
 
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _show_run_file_banner(self, message: str = "") -> None:
         """Show .run file detection banner and disable driver management."""
@@ -412,7 +413,7 @@ class DriversPage(Adw.PreferencesPage):
         self._available_drivers_spinner.set_visible(False)
         self._available_drivers_spinner.set_spinning(False)
         self._no_drivers_status.set_visible(True)
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _populate_snapshots(self, snapshots: list) -> bool:
         """Populate Snapshots group from D-Bus response."""
@@ -423,22 +424,99 @@ class DriversPage(Adw.PreferencesPage):
 
         if not snapshots:
             self._no_snapshots_status.set_visible(True)
+            self._snapshots_group.set_description("")
         else:
             self._no_snapshots_status.set_visible(False)
-            # Snapshot display rows — rollback actions deferred to Epic 3
             for snap in snapshots:
-                row = Adw.ActionRow()
-                name = snap.get("name", _("Snapshot"))
-                date = snap.get("date", "") or _("Date unknown")
-                row.set_title(name)
-                row.set_subtitle(date)
-                row.update_property(
-                    [Gtk.AccessibleProperty.DESCRIPTION],
-                    [_("Snapshot: {}, created {}").format(name, date)],
+                row = build_snapshot_row(
+                    snap,
+                    on_rollback_clicked=self._on_rollback_clicked,
+                    on_delete_clicked=self._on_delete_clicked,
                 )
                 self._snapshots_group.add(row)
                 self._snapshot_rows.append(row)
-        return GLib.SOURCE_REMOVE
+            self._update_snapshot_storage_summary(snapshots)
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+    def _update_snapshot_storage_summary(self, snapshots: list) -> None:
+        """Update Snapshots group description with storage summary."""
+        from verde.widgets.snapshot_row import _format_file_size
+
+        count = len(snapshots)
+        total_bytes = sum(s.get("file_size", 0) for s in snapshots)
+        size_str = _format_file_size(total_bytes)
+        self._snapshots_group.set_description(
+            _("{} snapshots \u2014 {} total").format(count, size_str)
+        )
+
+    def _on_rollback_clicked(self, _btn: Gtk.Button, snapshot: dict) -> None:
+        """Handle rollback button click — deferred to Story 3.3."""
+        log.info("Rollback requested for snapshot %s", snapshot.get("id", ""))
+
+    def _on_delete_clicked(self, _btn: Gtk.Button, snapshot: dict) -> None:
+        """Handle delete button click — show confirmation dialog."""
+        self._show_delete_confirmation(snapshot)
+
+    def _show_delete_confirmation(self, snapshot: dict) -> None:
+        """Show Adw.MessageDialog to confirm snapshot deletion (AC#4)."""
+        from verde.widgets.snapshot_row import _format_timestamp
+
+        snapshot_id = snapshot.get("id", "")
+        timestamp = snapshot.get("timestamp", "")
+        driver_version = snapshot.get("driver_version", "")
+        human_date = _format_timestamp(timestamp)
+
+        window = self.get_root()
+        dialog = Adw.MessageDialog.new(window, _("Delete Snapshot?"))
+        dialog.set_body(
+            _(
+                "This snapshot from {} (driver {}) will be permanently removed. "
+                "You will not be able to rollback to this state."
+            ).format(human_date, driver_version)
+        )
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("delete", _("Delete"))
+        dialog.set_response_appearance("delete", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        dialog._snapshot_id = snapshot_id
+        dialog.connect("response", self._on_delete_dialog_response)
+        dialog.present()
+
+    def _on_delete_dialog_response(self, dialog: Adw.MessageDialog, response: str) -> None:
+        """Handle delete confirmation dialog response."""
+        if response != "delete":
+            return
+
+        snapshot_id = dialog._snapshot_id
+        if self._dbus_client is None:
+            return
+
+        def _on_reply(proxy, result):
+            try:
+                proxy.call_finish(result)
+                GLib.idle_add(self._load_driver_data)
+            except GLib.Error as exc:
+                log.warning("DeleteSnapshot failed: %s", exc.message)
+                GLib.idle_add(self._show_delete_error, str(exc.message))
+
+        self._dbus_client.call_method_async(
+            "DeleteSnapshot",
+            GLib.Variant("(s)", (snapshot_id,)),
+            _on_reply,
+        )
+
+    def _show_delete_error(self, error_text: str) -> bool:
+        """Show error dialog after failed snapshot deletion."""
+        window = self.get_root()
+        dialog = Adw.MessageDialog.new(window, _("Deletion Failed"))
+        dialog.set_body(_sanitize_dbus_error(error_text))
+        dialog.add_response("ok", _("OK"))
+        dialog.set_default_response("ok")
+        dialog.set_close_response("ok")
+        dialog.present()
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     # ── Install flow (Task 5) ───────────────────────────────────────
 
@@ -543,13 +621,13 @@ class DriversPage(Adw.PreferencesPage):
         # Enable Install button only if all checks passed
         dialog.set_response_enabled("install", preflight.all_passed)
 
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _on_preflight_error(self, dialog: Adw.MessageDialog, error_text: str) -> bool:
         """Handle pre-flight check error on main thread."""
         dialog._preflight.set_error(_sanitize_dbus_error(error_text))
         dialog.set_response_enabled("install", False)
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _on_install_dialog_response(self, dialog: Adw.MessageDialog, response: str) -> None:
         """Handle install dialog response."""
@@ -598,7 +676,7 @@ class DriversPage(Adw.PreferencesPage):
     def _on_install_started(self, op_id: str) -> bool:
         """Handle successful InstallDriver call — store op_id."""
         self._current_op_id = op_id
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _on_install_start_error(self, error_text: str) -> bool:
         """Handle InstallDriver call failure."""
@@ -607,7 +685,7 @@ class DriversPage(Adw.PreferencesPage):
             panel.set_error(_sanitize_dbus_error(error_text))
             self._active_dialog.set_close_response("cancel")
             self._active_dialog.set_response_enabled("cancel", True)
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     # ── D-Bus signal handlers ───────────────────────────────────────
 

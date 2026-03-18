@@ -239,3 +239,21 @@ class VerdeDBusClient(GObject.Object):
             self._gpu_state.update_from_dict(data)
         except GLib.Error as exc:
             log.warning("GetGPUStats failed: %s", exc.message)
+
+    # ── Snapshot methods (Story 3.2) ────────────────────────────────
+
+    def list_snapshots(self, callback: typing.Callable[..., typing.Any] | None = None) -> None:
+        """Fetch snapshot list from daemon asynchronously."""
+        self.call_method_async("ListSnapshots", None, callback)
+
+    def delete_snapshot(
+        self,
+        snapshot_id: str,
+        callback: typing.Callable[..., typing.Any] | None = None,
+    ) -> None:
+        """Delete a snapshot via D-Bus asynchronously."""
+        self.call_method_async(
+            "DeleteSnapshot",
+            GLib.Variant("(s)", (snapshot_id,)),
+            callback,
+        )

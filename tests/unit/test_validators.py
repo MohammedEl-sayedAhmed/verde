@@ -53,9 +53,9 @@ class TestValidateSnapshotId:
     @pytest.mark.parametrize(
         "snapshot_id",
         [
-            "2026-03-18T14:30:00_nvidia-565",
-            "2025-01-01T00:00:00_nvidia-535",
-            "2026-12-31T23:59:59_nvidia-5650",
+            "20260318T143000_nvidia-560-a1b2",
+            "20250101T000000_nvidia-535-ff00",
+            "20261231T235959_nvidia-565.57-f0e1",
         ],
     )
     def test_valid_snapshot_ids(self, snapshot_id):
@@ -66,11 +66,12 @@ class TestValidateSnapshotId:
         [
             "",
             "not-a-snapshot",
-            "2026-03-18T14:30:00_nvidia-565; whoami",  # injection
-            "2026-03-18T14:30:00_amd-565",  # wrong vendor
-            "2026-3-18T14:30:00_nvidia-565",  # single-digit month
-            "2026-03-18 14:30:00_nvidia-565",  # space instead of T
-            "2026-03-18T14:30:00_nvidia-56",  # version too short
+            "20260318T143000_nvidia-560-a1b2; whoami",  # injection
+            "../../../etc/passwd",  # path traversal
+            "2026-03-18T14:30:00_nvidia-565",  # old colon format
+            "20260318T143000_with spaces-ab01",  # spaces
+            "20260318T143000_with/slash-ab01",  # path separator
+            "20260318_missing-time-ab01",  # no time portion
         ],
     )
     def test_invalid_snapshot_ids(self, snapshot_id):
