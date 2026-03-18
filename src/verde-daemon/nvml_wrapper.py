@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ctypes
 import logging
+import subprocess
 
 log = logging.getLogger(__name__)
 
@@ -84,6 +85,32 @@ NVML_VOLATILE_ECC = 0
 NVML_MEMORY_LOCATION_DEVICE = 0
 
 # ---------------------------------------------------------------------------
+# Throttle reason human-readable decoder
+# ---------------------------------------------------------------------------
+
+THROTTLE_REASON_MAP: dict[int, str] = {
+    NVML_THROTTLE_REASON_SW_POWER_CAP: "Software power cap",
+    NVML_THROTTLE_REASON_HW_SLOWDOWN: "Hardware slowdown",
+    NVML_THROTTLE_REASON_SYNC_BOOST: "Sync boost",
+    NVML_THROTTLE_REASON_SW_THERMAL: "Software thermal limit",
+    NVML_THROTTLE_REASON_HW_THERMAL: "Hardware thermal limit",
+    NVML_THROTTLE_REASON_HW_POWER_BRAKE: "Hardware power brake",
+    NVML_THROTTLE_REASON_DISPLAY_CLOCK: "Display clock setting",
+    NVML_THROTTLE_REASON_APP_CLOCK_SETTING: "Application clock setting",
+}
+
+
+def decode_throttle_reasons(bitmask: int) -> list[str]:
+    """Convert a throttle reason bitmask to human-readable strings.
+
+    Returns an empty list for no throttling or GPU idle only.
+    """
+    if bitmask in (NVML_THROTTLE_REASON_NONE, NVML_THROTTLE_REASON_GPU_IDLE):
+        return []
+    return [label for bit, label in THROTTLE_REASON_MAP.items() if bitmask & bit]
+
+
+# ---------------------------------------------------------------------------
 # ctypes struct definitions
 # ---------------------------------------------------------------------------
 
@@ -124,6 +151,17 @@ class NvmlProcessInfo(ctypes.Structure):
     ]
 
 
+class NvmlProcessUtilizationSample(ctypes.Structure):
+    _fields_ = [
+        ("pid", ctypes.c_uint),
+        ("timeStamp", ctypes.c_ulonglong),
+        ("smUtil", ctypes.c_uint),
+        ("memUtil", ctypes.c_uint),
+        ("encUtil", ctypes.c_uint),
+        ("decUtil", ctypes.c_uint),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # NvmlWrapper class
 # ---------------------------------------------------------------------------
@@ -135,6 +173,7 @@ class NvmlWrapper:
     def __init__(self) -> None:
         self._lib: ctypes.CDLL | None = None
         self._initialized: bool = False
+        self._last_process_util_timestamp: int = 0
         try:
             self._lib = ctypes.CDLL("libnvidia-ml.so.1")
         except OSError:
@@ -370,6 +409,59 @@ class NvmlWrapper:
             for i in range(n)
         ]
 
+    def get_process_utilization(self, handle: ctypes.c_void_p) -> list[dict] | _Unavailable:
+        """Get per-process SM utilization samples.
+
+        Returns list of dicts with pid, sm_util, mem_util, enc_util, dec_util,
+        or ``Unavailable`` if unsupported (older drivers/GPUs).
+        """
+        capacity = 32
+        count = ctypes.c_uint(capacity)
+        arr = (NvmlProcessUtilizationSample * capacity)()
+        timestamp = ctypes.c_ulonglong(self._last_process_util_timestamp)
+
+        ret = self._call(
+            "nvmlDeviceGetProcessUtilization",
+            handle,
+            arr,
+            ctypes.byref(count),
+            timestamp,
+        )
+        if ret == NVML_ERROR_INSUFFICIENT_SIZE and count.value > capacity:
+            capacity = count.value
+            count = ctypes.c_uint(capacity)
+            arr = (NvmlProcessUtilizationSample * capacity)()
+            ret = self._call(
+                "nvmlDeviceGetProcessUtilization",
+                handle,
+                arr,
+                ctypes.byref(count),
+                timestamp,
+            )
+        if ret == NVML_ERROR_NOT_SUPPORTED:
+            return Unavailable
+        if ret != NVML_SUCCESS:
+            return Unavailable
+
+        n = min(count.value, capacity)
+        results: list[dict] = []
+        max_ts = self._last_process_util_timestamp
+        for i in range(n):
+            s = arr[i]
+            results.append(
+                {
+                    "pid": s.pid,
+                    "sm_util": s.smUtil,
+                    "mem_util": s.memUtil,
+                    "enc_util": s.encUtil,
+                    "dec_util": s.decUtil,
+                }
+            )
+            if s.timeStamp > max_ts:
+                max_ts = s.timeStamp
+        self._last_process_util_timestamp = max_ts
+        return results
+
     def get_running_processes(self, handle: ctypes.c_void_p) -> list[dict] | _Unavailable:
         result: list[dict] = []
         for func_name, proc_type in (
@@ -383,6 +475,17 @@ class NvmlWrapper:
                 continue
             else:
                 return Unavailable
+
+        # Merge per-process SM utilization when available
+        util_samples = self.get_process_utilization(handle)
+        if util_samples is Unavailable:
+            for proc in result:
+                proc["sm_util"] = Unavailable
+        else:
+            util_by_pid = {s["pid"]: s["sm_util"] for s in util_samples}
+            for proc in result:
+                proc["sm_util"] = util_by_pid.get(proc["pid"], Unavailable)
+
         return result
 
     # -- convenience aggregation --------------------------------------------
@@ -396,6 +499,8 @@ class NvmlWrapper:
             "uuid": self.get_device_uuid(handle),
             "driver_version": self.get_driver_version(),
             "cuda_driver_version": self.get_cuda_driver_version(),
+            "cuda_toolkit_version": self.get_cuda_toolkit_version(),
+            "gpu_mode": self.get_gpu_mode(),
             "pci_info": self.get_pci_info(handle),
             "num_cores": self.get_num_gpu_cores(handle),
             "compute_capability": self.get_cuda_compute_capability(handle),
@@ -406,6 +511,12 @@ class NvmlWrapper:
         handle = self.get_device_by_index(index)
         if handle is Unavailable:
             return {"handle": Unavailable}
+        throttle_raw = self.get_throttle_reasons(handle)
+        throttle_decoded = (
+            decode_throttle_reasons(throttle_raw)
+            if throttle_raw is not Unavailable
+            else Unavailable
+        )
         return {
             "temperature": self.get_temperature(handle),
             "clock_graphics": self.get_clock_info(handle, NVML_CLOCK_GRAPHICS),
@@ -416,7 +527,66 @@ class NvmlWrapper:
             "power_usage": self.get_power_usage(handle),
             "power_limit": self.get_power_limit(handle),
             "performance_state": self.get_performance_state(handle),
-            "throttle_reasons": self.get_throttle_reasons(handle),
+            "throttle_reasons": throttle_raw,
+            "throttle_reasons_decoded": throttle_decoded,
             "processes": self.get_running_processes(handle),
             "memory_errors": self.get_memory_error_count(handle),
         }
+
+    # -- non-NVML helpers (subprocess/sysfs) --------------------------------
+
+    @staticmethod
+    def get_gpu_mode() -> str | _Unavailable:
+        """Detect Optimus/hybrid GPU mode via prime-select or sysfs.
+
+        Returns ``"nvidia"``, ``"intel"``, ``"on-demand"``, ``"amd"``,
+        or ``Unavailable`` on desktop GPUs or when detection fails.
+        """
+        try:
+            result = subprocess.run(
+                ["prime-select", "query"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                mode = result.stdout.strip().lower()
+                if mode in ("nvidia", "intel", "on-demand", "amd"):
+                    return mode
+                return Unavailable
+        except FileNotFoundError:
+            pass
+        except (subprocess.TimeoutExpired, OSError):
+            return Unavailable
+
+        # Fallback: check sysfs switchable GPU presence
+        import os
+
+        if os.path.exists("/sys/kernel/debug/vgaswitcheroo/switch"):
+            return "hybrid"
+        return Unavailable
+
+    @staticmethod
+    def get_cuda_toolkit_version() -> str | _Unavailable:
+        """Detect installed CUDA toolkit version via ``nvcc --version``.
+
+        Returns version string (e.g. ``"12.4"``) or ``Unavailable``.
+        """
+        try:
+            result = subprocess.run(
+                ["nvcc", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                import re
+
+                match = re.search(r"release\s+(\d+\.\d+)", result.stdout)
+                if match:
+                    return match.group(1)
+        except FileNotFoundError:
+            pass
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        return Unavailable

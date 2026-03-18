@@ -325,3 +325,248 @@ class TestUnavailableDisplay:
         gpu_state.set_property("gpu-available", True)
         gpu_state.set_property("temperature", 55)
         assert dashboard._temp_row.get_subtitle() == "55°C"
+
+
+# ===================================================================
+# Advanced details progressive disclosure (Story 1.11)
+# ===================================================================
+
+
+class TestAdvancedDetailsExpander:
+    @pytest.fixture
+    def dashboard(self, gpu_state):
+        page = DashboardPage()
+        page.bind_state(gpu_state)
+        return page
+
+    def test_expander_collapsed_by_default(self, dashboard):
+        assert dashboard._advanced_expander.get_expanded() is False
+
+    def test_expander_exists_in_monitoring_groups(self, dashboard):
+        assert dashboard._advanced_group in dashboard._monitoring_groups
+
+    def test_cores_row_shows_value(self, dashboard, gpu_state):
+        gpu_state.set_property("num-cores", 16384)
+        assert dashboard._cores_row.get_subtitle() == "16384"
+
+    def test_cores_row_unavailable_when_zero(self, dashboard, gpu_state):
+        gpu_state.set_property("num-cores", 0)
+        assert dashboard._cores_row.get_subtitle() == "Unavailable"
+
+    def test_compute_capability_row(self, dashboard, gpu_state):
+        gpu_state.set_property("compute-capability", "8.9")
+        assert dashboard._compute_cap_row.get_subtitle() == "8.9"
+
+    def test_compute_capability_unavailable(self, dashboard, gpu_state):
+        gpu_state.set_property("compute-capability", "")
+        assert dashboard._compute_cap_row.get_subtitle() == "Unavailable"
+
+    def test_power_limit_row(self, dashboard, gpu_state):
+        gpu_state.set_property("power-limit", 450.0)
+        assert dashboard._power_limit_row.get_subtitle() == "450W"
+
+    def test_power_limit_unavailable(self, dashboard, gpu_state):
+        gpu_state.set_property("power-limit", 0.0)
+        assert dashboard._power_limit_row.get_subtitle() == "Unavailable"
+
+    def test_cuda_driver_version_row(self, dashboard, gpu_state):
+        gpu_state.set_property("cuda-driver-version", "12.6")
+        assert dashboard._cuda_driver_row.get_subtitle() == "Up to CUDA 12.6"
+
+    def test_cuda_driver_version_unavailable(self, dashboard, gpu_state):
+        gpu_state.set_property("cuda-driver-version", "")
+        assert dashboard._cuda_driver_row.get_subtitle() == "Unavailable"
+
+    def test_cuda_toolkit_version_row(self, dashboard, gpu_state):
+        gpu_state.set_property("cuda-toolkit-version", "12.4")
+        assert dashboard._cuda_toolkit_row.get_subtitle() == "CUDA Toolkit 12.4"
+
+    def test_cuda_toolkit_not_installed(self, dashboard, gpu_state):
+        gpu_state.set_property("cuda-toolkit-version", "")
+        assert dashboard._cuda_toolkit_row.get_subtitle() == "Not installed"
+
+    def test_gpu_mode_hidden_by_default(self, dashboard):
+        assert dashboard._gpu_mode_row.get_visible() is False
+
+    def test_gpu_mode_shown_when_set(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-mode", "on-demand")
+        assert dashboard._gpu_mode_row.get_visible() is True
+        assert dashboard._gpu_mode_row.get_subtitle() == "on-demand"
+
+    def test_gpu_mode_hidden_when_cleared(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-mode", "nvidia")
+        assert dashboard._gpu_mode_row.get_visible() is True
+        gpu_state.set_property("gpu-mode", "")
+        assert dashboard._gpu_mode_row.get_visible() is False
+
+    def test_ecc_hidden_by_default(self, dashboard):
+        assert dashboard._ecc_row.get_visible() is False
+
+    def test_ecc_shown_when_enabled(self, dashboard, gpu_state):
+        gpu_state.set_property("ecc-mode", True)
+        gpu_state.set_property("memory-errors", 3)
+        assert dashboard._ecc_row.get_visible() is True
+        assert "3 errors" in dashboard._ecc_row.get_subtitle()
+
+    def test_ecc_hidden_when_disabled(self, dashboard, gpu_state):
+        gpu_state.set_property("ecc-mode", True)
+        assert dashboard._ecc_row.get_visible() is True
+        gpu_state.set_property("ecc-mode", False)
+        assert dashboard._ecc_row.get_visible() is False
+
+    def test_throttle_hidden_by_default(self, dashboard):
+        assert dashboard._throttle_row.get_visible() is False
+
+    def test_throttle_shown_when_active(self, dashboard, gpu_state):
+        gpu_state.set_property("throttle-reasons", "Software power cap")
+        assert dashboard._throttle_row.get_visible() is True
+        assert dashboard._throttle_row.get_subtitle() == "Software power cap"
+
+    def test_throttle_hidden_when_cleared(self, dashboard, gpu_state):
+        gpu_state.set_property("throttle-reasons", "Hardware slowdown")
+        assert dashboard._throttle_row.get_visible() is True
+        gpu_state.set_property("throttle-reasons", "")
+        assert dashboard._throttle_row.get_visible() is False
+
+    def test_multi_gpu_hidden_when_single(self, dashboard, gpu_state):
+        gpu_state.set_property("device-count", 1)
+        assert dashboard._multi_gpu_row.get_visible() is False
+
+    def test_multi_gpu_shown_when_multiple(self, dashboard, gpu_state):
+        gpu_state.set_property("device-count", 3)
+        assert dashboard._multi_gpu_row.get_visible() is True
+        assert "2 additional GPUs detected" in dashboard._multi_gpu_row.get_subtitle()
+
+    def test_multi_gpu_singular(self, dashboard, gpu_state):
+        gpu_state.set_property("device-count", 2)
+        assert "1 additional GPU detected" in dashboard._multi_gpu_row.get_subtitle()
+
+    def test_multi_gpu_hidden_when_zero(self, dashboard, gpu_state):
+        gpu_state.set_property("device-count", 0)
+        assert dashboard._multi_gpu_row.get_visible() is False
+
+    def test_pcie_bus_id_row_shows_value(self, dashboard, gpu_state):
+        gpu_state.set_property("pci-bus-id", "0000:01:00.0")
+        assert dashboard._pcie_bus_id_row.get_subtitle() == "0000:01:00.0"
+
+    def test_pcie_bus_id_unavailable(self, dashboard, gpu_state):
+        gpu_state.set_property("pci-bus-id", "")
+        assert dashboard._pcie_bus_id_row.get_subtitle() == "Unavailable"
+
+
+# ===================================================================
+# Process list display (Story 1.11 P-3)
+# ===================================================================
+
+
+class TestProcessDisplay:
+    @pytest.fixture
+    def dashboard(self, gpu_state):
+        page = DashboardPage()
+        page.bind_state(gpu_state)
+        return page
+
+    def test_no_processes_shows_no_processes(self, dashboard):
+        assert dashboard._process_expander.get_subtitle() == "No processes"
+        assert len(dashboard._process_rows) == 0
+
+    def test_process_with_sm_util(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {
+                "processes": [
+                    {"pid": 1234, "used_gpu_memory": 536870912, "type": "compute", "sm_util": 42}
+                ]
+            }
+        )
+        # Flush the idle_add
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert len(dashboard._process_rows) == 1
+        assert "PID 1234" in dashboard._process_rows[0].get_title()
+        assert "GPU: 42%" in dashboard._process_rows[0].get_subtitle()
+        assert "VRAM: 512 MB" in dashboard._process_rows[0].get_subtitle()
+
+    def test_process_without_sm_util(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {"processes": [{"pid": 5678, "used_gpu_memory": 1073741824, "type": "graphics"}]}
+        )
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert len(dashboard._process_rows) == 1
+        assert "GPU: N/A" in dashboard._process_rows[0].get_subtitle()
+
+    def test_multiple_processes(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {
+                "processes": [
+                    {"pid": 100, "used_gpu_memory": 100000000, "type": "compute", "sm_util": 10},
+                    {"pid": 200, "used_gpu_memory": 200000000, "type": "graphics", "sm_util": 20},
+                ]
+            }
+        )
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert len(dashboard._process_rows) == 2
+        assert dashboard._process_expander.get_subtitle() == "2 processes"
+
+    def test_single_process_singular_label(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {
+                "processes": [
+                    {"pid": 100, "used_gpu_memory": 100000000, "type": "compute", "sm_util": 10}
+                ]
+            }
+        )
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert dashboard._process_expander.get_subtitle() == "1 process"
+
+    def test_process_rows_cleared_on_update(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {
+                "processes": [
+                    {"pid": 100, "used_gpu_memory": 100000000, "type": "compute", "sm_util": 10},
+                    {"pid": 200, "used_gpu_memory": 200000000, "type": "graphics", "sm_util": 20},
+                ]
+            }
+        )
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert len(dashboard._process_rows) == 2
+        # Update with fewer processes
+        gpu_state.update_from_dict(
+            {
+                "processes": [
+                    {"pid": 300, "used_gpu_memory": 300000000, "type": "compute", "sm_util": 30}
+                ]
+            }
+        )
+        while ctx.pending():
+            ctx.iteration(False)
+        assert len(dashboard._process_rows) == 1
+
+    def test_process_type_in_title(self, dashboard, gpu_state):
+        gpu_state.update_from_dict(
+            {"processes": [{"pid": 1234, "used_gpu_memory": 0, "type": "compute", "sm_util": 0}]}
+        )
+        from gi.repository import GLib
+
+        ctx = GLib.MainContext.default()
+        while ctx.pending():
+            ctx.iteration(False)
+        assert "(compute)" in dashboard._process_rows[0].get_title()

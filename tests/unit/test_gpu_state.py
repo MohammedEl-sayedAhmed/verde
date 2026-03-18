@@ -231,3 +231,52 @@ class TestReset:
         assert gpu_state.get_property("driver-type") == "unknown"
         assert gpu_state.get_property("utilization") == 0
         assert gpu_state.get_property("gpu-available") is False
+
+
+# ===================================================================
+# PCIe Bus ID and process data (Story 1.11 patches)
+# ===================================================================
+
+
+class TestPciBusIdProperty:
+    def test_default_empty(self, gpu_state):
+        assert gpu_state.get_property("pci-bus-id") == ""
+
+    def test_update_from_dict(self, gpu_state):
+        gpu_state._do_update({"pci_bus_id": "0000:01:00.0"})
+        assert gpu_state.get_property("pci-bus-id") == "0000:01:00.0"
+
+    def test_reset_clears(self, gpu_state):
+        gpu_state._do_update({"pci_bus_id": "0000:01:00.0"})
+        gpu_state._do_reset()
+        assert gpu_state.get_property("pci-bus-id") == ""
+
+
+class TestProcessData:
+    def test_default_empty(self, gpu_state):
+        assert gpu_state.get_processes() == []
+        assert gpu_state.get_property("process-count") == 0
+
+    def test_update_processes(self, gpu_state):
+        procs = [
+            {"pid": 1234, "used_gpu_memory": 500000000, "type": "compute", "sm_util": 42},
+            {"pid": 5678, "used_gpu_memory": 100000000, "type": "graphics", "sm_util": 10},
+        ]
+        gpu_state._do_update({"processes": procs})
+        assert gpu_state.get_property("process-count") == 2
+        result = gpu_state.get_processes()
+        assert len(result) == 2
+        assert result[0]["pid"] == 1234
+        assert result[0]["sm_util"] == 42
+
+    def test_reset_clears_processes(self, gpu_state):
+        gpu_state._do_update({"processes": [{"pid": 1}]})
+        assert gpu_state.get_property("process-count") == 1
+        gpu_state._do_reset()
+        assert gpu_state.get_processes() == []
+
+    def test_get_processes_returns_copy(self, gpu_state):
+        gpu_state._do_update({"processes": [{"pid": 1}]})
+        copy = gpu_state.get_processes()
+        copy.append({"pid": 2})
+        assert len(gpu_state.get_processes()) == 1

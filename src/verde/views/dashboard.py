@@ -183,6 +183,10 @@ else:
             self._on_utilization_changed()
             self._on_memory_changed()
             self._on_power_changed()
+            self._on_advanced_info_changed()
+            self._on_throttle_changed()
+            self._on_device_count_changed()
+            self._on_processes_changed()
             self._update_health()
             # Check initial degraded state
             self._on_degraded_state_changed()
@@ -246,6 +250,78 @@ else:
                 ["Live GPU Statistics"],
             )
 
+            # ── Advanced Details group (collapsed by default) ──
+            self._advanced_group = Adw.PreferencesGroup(title="Advanced Details")
+            self.add(self._advanced_group)
+            self._monitoring_groups.append(self._advanced_group)
+
+            self._advanced_expander = Adw.ExpanderRow(
+                title="Hardware and Software Details",
+                show_enable_switch=False,
+            )
+            self._advanced_group.add(self._advanced_expander)
+
+            # CUDA cores
+            self._cores_row = Adw.ActionRow(title="CUDA Cores")
+            self._advanced_expander.add_row(self._cores_row)
+
+            # Compute capability
+            self._compute_cap_row = Adw.ActionRow(title="Compute Capability")
+            self._advanced_expander.add_row(self._compute_cap_row)
+
+            # PCIe Bus ID
+            self._pcie_bus_id_row = Adw.ActionRow(title="PCIe Bus ID")
+            self._advanced_expander.add_row(self._pcie_bus_id_row)
+
+            # Power limit
+            self._power_limit_row = Adw.ActionRow(title="Power Limit")
+            self._advanced_expander.add_row(self._power_limit_row)
+
+            # Driver CUDA version
+            self._cuda_driver_row = Adw.ActionRow(title="Driver CUDA Version")
+            self._cuda_driver_row.set_subtitle("Maximum CUDA version supported by driver")
+            self._advanced_expander.add_row(self._cuda_driver_row)
+
+            # CUDA toolkit version
+            self._cuda_toolkit_row = Adw.ActionRow(title="CUDA Toolkit Version")
+            self._cuda_toolkit_row.set_subtitle("Installed toolkit version")
+            self._advanced_expander.add_row(self._cuda_toolkit_row)
+
+            # GPU mode (Optimus) — hidden by default, shown only when available
+            self._gpu_mode_row = Adw.ActionRow(title="GPU Mode")
+            self._gpu_mode_row.set_visible(False)
+            self._advanced_expander.add_row(self._gpu_mode_row)
+
+            # ECC row — hidden by default, shown only on ECC-capable GPUs
+            self._ecc_row = Adw.ActionRow(title="ECC Memory")
+            self._ecc_row.set_visible(False)
+            self._advanced_expander.add_row(self._ecc_row)
+
+            # Throttle reasons — hidden when no throttling
+            self._throttle_row = Adw.ActionRow(title="Throttle Reasons")
+            self._throttle_row.set_visible(False)
+            self._advanced_expander.add_row(self._throttle_row)
+
+            # Multi-GPU notice — hidden when single GPU
+            self._multi_gpu_row = Adw.ActionRow(
+                title="Additional GPUs Detected",
+            )
+            self._multi_gpu_row.set_visible(False)
+            self._advanced_expander.add_row(self._multi_gpu_row)
+
+            # ── Running Processes group ──
+            self._process_group = Adw.PreferencesGroup(title="Running Processes")
+            self.add(self._process_group)
+            self._monitoring_groups.append(self._process_group)
+
+            self._process_expander = Adw.ExpanderRow(
+                title="GPU Processes",
+                subtitle="No processes",
+                show_enable_switch=False,
+            )
+            self._process_group.add(self._process_expander)
+            self._process_rows: list[Adw.ActionRow] = []
+
         def _connect_signals(self) -> None:
             gs = self._gpu_state
             gs.connect("notify::gpu-name", lambda *_: self._on_gpu_info_changed())
@@ -257,8 +333,21 @@ else:
             gs.connect("notify::memory-total", lambda *_: self._on_memory_changed())
             gs.connect("notify::power-draw", lambda *_: self._on_power_changed())
             gs.connect("notify::power-limit", lambda *_: self._on_power_changed())
+            gs.connect("notify::power-limit", lambda *_: self._on_advanced_info_changed())
             gs.connect("notify::gpu-available", lambda *_: self._on_gpu_available_changed())
             gs.connect("notify::degraded-state", lambda *_: self._on_degraded_state_changed())
+            # Advanced details signals
+            gs.connect("notify::num-cores", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::compute-capability", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::cuda-driver-version", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::cuda-toolkit-version", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::pci-bus-id", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::gpu-mode", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::ecc-mode", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::memory-errors", lambda *_: self._on_advanced_info_changed())
+            gs.connect("notify::throttle-reasons", lambda *_: self._on_throttle_changed())
+            gs.connect("notify::device-count", lambda *_: self._on_device_count_changed())
+            gs.connect("notify::process-count", lambda *_: self._on_processes_changed())
 
         # ── Property change handlers ─────────────────────────────────
 
@@ -348,6 +437,113 @@ else:
                 [Gtk.AccessibleProperty.DESCRIPTION],
                 [f"System Health: {labels[health]}"],
             )
+
+        def _on_advanced_info_changed(self) -> None:
+            gs = self._gpu_state
+            # CUDA cores
+            cores = gs.get_property("num-cores")
+            self._cores_row.set_subtitle(str(cores) if cores else "Unavailable")
+
+            # Compute capability
+            cc = gs.get_property("compute-capability")
+            self._compute_cap_row.set_subtitle(cc if cc else "Unavailable")
+
+            # PCIe Bus ID
+            bus_id = gs.get_property("pci-bus-id")
+            self._pcie_bus_id_row.set_subtitle(bus_id if bus_id else "Unavailable")
+
+            # Power limit
+            plimit = gs.get_property("power-limit")
+            self._power_limit_row.set_subtitle(f"{plimit:.0f}W" if plimit > 0 else "Unavailable")
+
+            # Driver CUDA version
+            cuda_drv = gs.get_property("cuda-driver-version")
+            self._cuda_driver_row.set_subtitle(
+                f"Up to CUDA {cuda_drv}" if cuda_drv else "Unavailable"
+            )
+
+            # CUDA toolkit version
+            cuda_tk = gs.get_property("cuda-toolkit-version")
+            self._cuda_toolkit_row.set_subtitle(
+                f"CUDA Toolkit {cuda_tk}" if cuda_tk else "Not installed"
+            )
+
+            # GPU mode (Optimus)
+            mode = gs.get_property("gpu-mode")
+            if mode:
+                self._gpu_mode_row.set_subtitle(mode)
+                self._gpu_mode_row.set_visible(True)
+            else:
+                self._gpu_mode_row.set_visible(False)
+
+            # ECC
+            ecc = gs.get_property("ecc-mode")
+            if ecc:
+                errors = gs.get_property("memory-errors")
+                self._ecc_row.set_subtitle(f"Enabled — {errors} errors")
+                self._ecc_row.set_visible(True)
+            else:
+                self._ecc_row.set_visible(False)
+
+        def _on_throttle_changed(self) -> None:
+            reasons = self._gpu_state.get_property("throttle-reasons")
+            if reasons:
+                self._throttle_row.set_subtitle(reasons)
+                self._throttle_row.add_css_class("warning")
+                self._throttle_row.set_visible(True)
+            else:
+                self._throttle_row.remove_css_class("warning")
+                self._throttle_row.set_visible(False)
+
+        def _on_device_count_changed(self) -> None:
+            count = self._gpu_state.get_property("device-count")
+            if count > 1:
+                extra = count - 1
+                label = "GPU" if extra == 1 else "GPUs"
+                self._multi_gpu_row.set_subtitle(f"{extra} additional {label} detected")
+                self._multi_gpu_row.set_visible(True)
+            else:
+                self._multi_gpu_row.set_visible(False)
+
+        def _on_processes_changed(self) -> None:
+            gs = self._gpu_state
+            procs = gs.get_processes()
+
+            # Remove old process rows
+            for row in self._process_rows:
+                self._process_expander.remove(row)
+            self._process_rows.clear()
+
+            if not procs:
+                self._process_expander.set_subtitle("No processes")
+                return
+
+            count = len(procs)
+            label = "process" if count == 1 else "processes"
+            self._process_expander.set_subtitle(f"{count} {label}")
+
+            for p in procs:
+                pid = p.get("pid", "?")
+                vram_bytes = p.get("used_gpu_memory", 0)
+                vram_mb = vram_bytes / (1024 * 1024) if vram_bytes else 0
+                sm = p.get("sm_util")
+                proc_type = p.get("type", "")
+
+                # Format: "PID 1234 (compute)" with subtitle "VRAM: 512 MB | GPU: 42%"
+                title = f"PID {pid}"
+                if proc_type:
+                    title += f" ({proc_type})"
+
+                has_sm = "sm_util" in p and sm is not None
+                if has_sm:
+                    subtitle = f"VRAM: {vram_mb:.0f} MB  |  GPU: {sm}%"
+                else:
+                    subtitle = f"VRAM: {vram_mb:.0f} MB  |  GPU: N/A"
+
+                row = Adw.ActionRow(title=title)
+                row.set_subtitle(subtitle)
+                self._process_expander.add_row(row)
+                self._process_rows.append(row)
 
         def _on_gpu_available_changed(self) -> None:
             if not self._gpu_state.get_property("gpu-available"):

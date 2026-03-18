@@ -23,6 +23,13 @@ _KEY_MAP: dict[str, str] = {
     "driver_version": "driver-version",
     "driver_type": "driver-type",
     "state": "degraded-state",
+    "cuda_driver_version": "cuda-driver-version",
+    "cuda_toolkit_version": "cuda-toolkit-version",
+    "gpu_mode": "gpu-mode",
+    "num_cores": "num-cores",
+    "device_count": "device-count",
+    "memory_errors": "memory-errors",
+    "pci_bus_id": "pci-bus-id",
 }
 
 # Default values for reset() — only stats properties, not connection state.
@@ -44,6 +51,17 @@ _STAT_DEFAULTS: dict[str, object] = {
     "gpu-available": False,
     "reboot-required": False,
     "reboot-reason": "",
+    "cuda-driver-version": "",
+    "cuda-toolkit-version": "",
+    "gpu-mode": "",
+    "num-cores": 0,
+    "device-count": 0,
+    "memory-errors": 0,
+    "ecc-mode": False,
+    "compute-capability": "",
+    "throttle-reasons": "",
+    "pci-bus-id": "",
+    "process-count": 0,
 }
 
 
@@ -65,6 +83,12 @@ class GPUState(GObject.Object):
     degraded_state = GObject.Property(type=str, default="unknown", nick="degraded-state")
     p_state = GObject.Property(type=str, default="", nick="p-state")
     reboot_reason = GObject.Property(type=str, default="", nick="reboot-reason")
+    cuda_driver_version = GObject.Property(type=str, default="", nick="cuda-driver-version")
+    cuda_toolkit_version = GObject.Property(type=str, default="", nick="cuda-toolkit-version")
+    gpu_mode = GObject.Property(type=str, default="", nick="gpu-mode")
+    compute_capability = GObject.Property(type=str, default="", nick="compute-capability")
+    throttle_reasons = GObject.Property(type=str, default="", nick="throttle-reasons")
+    pci_bus_id = GObject.Property(type=str, default="", nick="pci-bus-id")
 
     # ── Integer properties ───────────────────────────────────────────
     temperature = GObject.Property(type=int, default=0)
@@ -72,6 +96,10 @@ class GPUState(GObject.Object):
     fan_speed = GObject.Property(type=int, default=0, nick="fan-speed")
     clock_graphics = GObject.Property(type=int, default=0, nick="clock-graphics")
     clock_memory = GObject.Property(type=int, default=0, nick="clock-memory")
+    num_cores = GObject.Property(type=int, default=0, nick="num-cores")
+    device_count = GObject.Property(type=int, default=0, nick="device-count")
+    memory_errors = GObject.Property(type=int, default=0, nick="memory-errors")
+    process_count = GObject.Property(type=int, default=0, nick="process-count")
 
     # ── Float properties (includes memory bytes — float64 handles >4GB) ──
     memory_used = GObject.Property(type=float, default=0.0, nick="memory-used")
@@ -82,9 +110,18 @@ class GPUState(GObject.Object):
     # ── Boolean properties ───────────────────────────────────────────
     gpu_available = GObject.Property(type=bool, default=False, nick="gpu-available")
     reboot_required = GObject.Property(type=bool, default=False, nick="reboot-required")
+    ecc_mode = GObject.Property(type=bool, default=False, nick="ecc-mode")
     operation_in_progress = GObject.Property(
         type=bool, default=False, nick="operation-in-progress"
     )
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)
+        self._processes: list[dict] = []
+
+    def get_processes(self) -> list[dict]:
+        """Return the current process list (read-only copy)."""
+        return list(self._processes)
 
     def update_from_dict(self, data: dict) -> None:
         """Update properties from a D-Bus ``a{sv}`` dict. Thread-safe.
@@ -135,6 +172,31 @@ class GPUState(GObject.Object):
             if isinstance(val, int):
                 self._set_if_changed("p-state", f"P{val}")
 
+        # Throttle reasons: D-Bus "as" (list of strings) → comma-joined string
+        if "throttle_reasons_decoded" in data:
+            reasons = data["throttle_reasons_decoded"]
+            if isinstance(reasons, list):
+                self._set_if_changed("throttle-reasons", ", ".join(reasons))
+            elif isinstance(reasons, str):
+                self._set_if_changed("throttle-reasons", reasons)
+
+        # Compute capability: major/minor ints → "X.Y" string
+        if "compute_capability_major" in data and "compute_capability_minor" in data:
+            major = data["compute_capability_major"]
+            minor = data["compute_capability_minor"]
+            self._set_if_changed("compute-capability", f"{major}.{minor}")
+
+        # ECC mode
+        if "ecc_mode" in data:
+            self._set_if_changed("ecc-mode", bool(data["ecc_mode"]))
+
+        # Process list — stored as plain Python list, notify via process-count
+        if "processes" in data:
+            procs = data["processes"]
+            if isinstance(procs, list):
+                self._processes = procs
+                self._set_if_changed("process-count", len(procs))
+
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def reset(self) -> None:
@@ -145,4 +207,5 @@ class GPUState(GObject.Object):
         """Apply reset on the main thread."""
         for prop_name, default in _STAT_DEFAULTS.items():
             self.set_property(prop_name, default)
+        self._processes = []
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]

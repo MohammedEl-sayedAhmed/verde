@@ -404,6 +404,44 @@ class VerdeService:
         # Driver type
         result["driver_type"] = GLib.Variant("s", self._detect_driver_type())
 
+        # GPU mode (Optimus/hybrid)
+        gpu_mode = info.get("gpu_mode")
+        if gpu_mode is not None and gpu_mode is not Unavailable:
+            result["gpu_mode"] = GLib.Variant("s", str(gpu_mode))
+        else:
+            result["gpu_mode_available"] = GLib.Variant("b", False)
+
+        # CUDA toolkit version
+        cuda_tk = info.get("cuda_toolkit_version")
+        if cuda_tk is not None and cuda_tk is not Unavailable:
+            result["cuda_toolkit_version"] = GLib.Variant("s", str(cuda_tk))
+        else:
+            result["cuda_toolkit_version_available"] = GLib.Variant("b", False)
+
+        # Multi-GPU device enumeration
+        if dc is not None and dc is not Unavailable and int(dc) > 0:
+            devices = []
+            for idx in range(int(dc)):
+                dev_handle = self._nvml.get_device_by_index(idx)
+                if dev_handle is Unavailable:
+                    continue
+                dev: dict[str, GLib.Variant] = {
+                    "index": GLib.Variant("i", idx),
+                }
+                dev_name = self._nvml.get_device_name(dev_handle)
+                if dev_name is not Unavailable:
+                    dev["name"] = GLib.Variant("s", dev_name)
+                dev_uuid = self._nvml.get_device_uuid(dev_handle)
+                if dev_uuid is not Unavailable:
+                    dev["uuid"] = GLib.Variant("s", dev_uuid)
+                dev_pci = self._nvml.get_pci_info(dev_handle)
+                if dev_pci is not Unavailable and isinstance(dev_pci, dict):
+                    bus_id = dev_pci.get("bus_id")
+                    if bus_id is not None:
+                        dev["bus_id"] = GLib.Variant("s", str(bus_id))
+                devices.append(dev)
+            result["devices"] = GLib.Variant("aa{sv}", devices)
+
         return result
 
     def _build_gpu_stats(self) -> dict[str, GLib.Variant]:
@@ -432,6 +470,13 @@ class VerdeService:
             result["throttle_reasons"] = GLib.Variant("t", tr)
         else:
             result["throttle_reasons_available"] = GLib.Variant("b", False)
+
+        # Decoded throttle reasons (human-readable strings)
+        trd = stats.get("throttle_reasons_decoded")
+        if trd is not None and trd is not Unavailable and isinstance(trd, list):
+            result["throttle_reasons_decoded"] = GLib.Variant("as", trd)
+        else:
+            result["throttle_reasons_decoded_available"] = GLib.Variant("b", False)
 
         # Memory info (flattened from nested dict)
         mem = stats.get("memory")
@@ -462,6 +507,11 @@ class VerdeService:
                     pv["used_gpu_memory"] = GLib.Variant("x", p["used_gpu_memory"])
                 if "type" in p:
                     pv["type"] = GLib.Variant("s", p["type"])
+                sm = p.get("sm_util")
+                if sm is not None and sm is not Unavailable:
+                    pv["sm_util"] = GLib.Variant("u", int(sm))
+                else:
+                    pv["sm_util_available"] = GLib.Variant("b", False)
                 proc_variants.append(pv)
             result["processes"] = GLib.Variant("aa{sv}", proc_variants)
             result["process_count"] = GLib.Variant("i", len(proc_variants))
