@@ -16,7 +16,7 @@ SNAPSHOT_ID_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}_nvidia-[0-9]{3,4}$"
 )
 OPERATION_NAME_PATTERN = re.compile(
-    r"^(driver_install|driver_rollback|fix_suspend|fix_hibernate)$"
+    r"^(driver_install|driver_switch|driver_rollback|fix_suspend|fix_hibernate)$"
 )
 
 

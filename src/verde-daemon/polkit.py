@@ -27,7 +27,6 @@ METHOD_ACTION_MAP: dict[str, str] = {
     "GetCurrentDriver": "com.verde.monitor",
     "ListAvailableDrivers": "com.verde.monitor",
     "GetPowerStatus": "com.verde.monitor",
-    "GetPreflightCheck": "com.verde.monitor",
 }
 
 

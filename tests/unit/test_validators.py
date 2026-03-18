@@ -86,7 +86,7 @@ class TestValidateSnapshotId:
 class TestValidateOperationName:
     @pytest.mark.parametrize(
         "operation",
-        ["driver_install", "driver_rollback", "fix_suspend", "fix_hibernate"],
+        ["driver_install", "driver_switch", "driver_rollback", "fix_suspend", "fix_hibernate"],
     )
     def test_valid_operations(self, operation):
         assert validate_operation_name(operation) == operation

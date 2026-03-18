@@ -16,6 +16,7 @@ daemon_sources = [
   'driver_manager.py',
   'nvml_wrapper.py',
   'polkit.py',
+  'preflight.py',
   'service.py',
   'validators.py',
 ]

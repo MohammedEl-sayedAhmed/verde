@@ -26,10 +26,9 @@ class TestMethodActionMap:
         "GetCurrentDriver",
         "ListAvailableDrivers",
         "GetPowerStatus",
-        "GetPreflightCheck",
     }
 
-    def test_all_12_methods_mapped(self):
+    def test_all_11_methods_mapped(self):
         assert set(METHOD_ACTION_MAP.keys()) == self.EXPECTED_METHODS
 
     def test_driver_methods_map_to_driver_manage(self):
@@ -51,7 +50,6 @@ class TestMethodActionMap:
             "GetCurrentDriver",
             "ListAvailableDrivers",
             "GetPowerStatus",
-            "GetPreflightCheck",
         ]
         for method in monitor_methods:
             assert METHOD_ACTION_MAP[method] == "com.verde.monitor"

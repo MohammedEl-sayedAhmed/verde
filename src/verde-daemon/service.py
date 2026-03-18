@@ -19,6 +19,7 @@ from verde_daemon.degraded_states import (
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
+from verde_daemon.preflight import PreflightChecker
 from verde_daemon.validators import (
     validate_driver_version,
     validate_operation_name,
@@ -38,7 +39,6 @@ _POLL_INTERVAL_SECONDS = 2
 _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
     "InstallDriver": [(0, validate_driver_version)],
     "RollbackDriver": [(0, validate_snapshot_id)],
-    "GetPreflightCheck": [(0, validate_operation_name)],
 }
 
 # Methods that return a{sv} GPU data — dispatched after Polkit auth.
@@ -108,6 +108,9 @@ class VerdeService:
                     if name is not Unavailable:
                         gpu_name = name
             self._driver_manager = DriverManager(gpu_name=gpu_name)
+
+        # Pre-flight checker
+        self._preflight = PreflightChecker()
 
         # Degraded state tracking — re-detected each poll cycle
         self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
@@ -297,6 +300,23 @@ class VerdeService:
             invocation.return_value(None)
             return
 
+        # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
+        # Validate input and dispatch before the auth gate.
+        if method_name == "GetPreflightCheck":
+            if parameters is not None:
+                try:
+                    value = parameters.get_child_value(0).get_string()
+                    validate_operation_name(value)
+                except ValueError as exc:
+                    invocation.return_dbus_error(
+                        "com.verde.Error.InvalidArgument",
+                        str(exc),
+                    )
+                    return
+            self._on_idle_reset()
+            self._dispatch_preflight_check(parameters, invocation)
+            return
+
         # Look up Polkit action for this method
         action_id = METHOD_ACTION_MAP.get(method_name)
         if action_id is None:
@@ -372,6 +392,41 @@ class VerdeService:
             ):
                 error_name = "com.verde.Error.AptUnavailable"
             invocation.return_dbus_error(error_name, str(exc))
+
+    # ------------------------------------------------------------------
+    # Pre-flight dispatch
+    # ------------------------------------------------------------------
+
+    def _dispatch_preflight_check(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Run pre-flight checks and return structured a{sv} result."""
+        try:
+            operation = parameters.get_child_value(0).get_string()
+            pf_result = self._preflight.run_all_checks(operation)
+
+            check_variants: list[dict[str, GLib.Variant]] = []
+            for c in pf_result.checks:
+                check_variants.append(
+                    {
+                        "name": GLib.Variant("s", c.name),
+                        "status": GLib.Variant("s", c.status),
+                        "description": GLib.Variant("s", c.description),
+                    }
+                )
+
+            result: dict[str, GLib.Variant] = {
+                "overall_pass": GLib.Variant("b", pf_result.overall_pass),
+                "duration_ms": GLib.Variant("i", pf_result.duration_ms),
+                "checks": GLib.Variant("aa{sv}", check_variants),
+            }
+
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
+        except Exception as exc:
+            log.exception("Internal error in GetPreflightCheck")
+            invocation.return_dbus_error("com.verde.Manager.InternalError", str(exc))
 
     # ------------------------------------------------------------------
     # GPU data builders
