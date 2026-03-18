@@ -28,6 +28,8 @@ jobs:
             meson \
             ninja-build \
             gettext \
+            desktop-file-utils \
+            appstream \
             python3-pip
 
       - name: Install Python tools
