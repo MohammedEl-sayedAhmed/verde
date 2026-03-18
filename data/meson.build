@@ -6,12 +6,11 @@ if blueprint_compiler.found()
   blueprints = custom_target(
     'blueprints',
     input: files('ui/window.blp'),
-    output: 'ui',
+    output: 'window.ui',
     command: [
       blueprint_compiler,
-      'batch-compile',
-      '@OUTPUT@',
-      '@CURRENT_SOURCE_DIR@',
+      'compile',
+      '--output', '@OUTPUT@',
       '@INPUT@',
     ],
   )
@@ -24,7 +23,7 @@ if blueprint_compiler.found()
     install: true,
     install_dir: pkgdatadir,
     dependencies: blueprints,
-    source_dir: ['.', meson.current_build_dir()],
+    source_dir: ['.'],
   )
 else
   warning('blueprint-compiler not found — building without Blueprint UI compilation')
