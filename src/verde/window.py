@@ -1,6 +1,13 @@
 """Verde main application window."""
 
+import logging
+
 from gi.repository import Adw, Gio, Gtk
+
+from verde.dbus_client import VerdeDBusClient
+from verde.gpu_state import GPUState
+
+log = logging.getLogger("verde.window")
 
 
 def _has_ui_resource() -> bool:
@@ -109,6 +116,8 @@ class VerdeApplication(Adw.Application):
     def __init__(self, application_id: str, version: str, **kwargs):
         super().__init__(application_id=application_id, **kwargs)
         self._version = version
+        self.gpu_state = GPUState()
+        self.dbus_client = VerdeDBusClient(gpu_state=self.gpu_state)
         self.connect("activate", self._on_activate)
 
         quit_action = Gio.SimpleAction.new("quit", None)
@@ -121,3 +130,9 @@ class VerdeApplication(Adw.Application):
         if not win:
             win = VerdeWindow(application=self)
         win.present()
+        self.dbus_client.connect_async()
+
+    def do_shutdown(self):
+        """Clean up D-Bus connection on application shutdown."""
+        self.dbus_client.close()
+        Adw.Application.do_shutdown(self)

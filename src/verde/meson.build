@@ -12,6 +12,8 @@ configure_file(
 
 verde_sources = [
   '__init__.py',
+  'dbus_client.py',
+  'gpu_state.py',
   'window.py',
   'views/__init__.py',
   'views/dashboard.py',

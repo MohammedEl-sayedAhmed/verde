@@ -4,6 +4,12 @@ import importlib
 import pathlib
 import sys
 
+# Register src/verde/ as importable so ``from verde.gpu_state import GPUState``
+# works during tests (the parent of the ``verde`` package directory).
+GUI_SRC = pathlib.Path(__file__).resolve().parents[1] / "src"
+if str(GUI_SRC) not in sys.path:
+    sys.path.insert(0, str(GUI_SRC))
+
 # Register src/verde-daemon as the "verde_daemon" package so that both
 # ``from verde_daemon import __version__`` and sub-module imports like
 # ``from verde_daemon.polkit import check_authorization`` work during tests.
