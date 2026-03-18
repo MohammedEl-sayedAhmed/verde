@@ -20,6 +20,11 @@ verde_sources = [
   'views/drivers.py',
   'views/power.py',
   'views/diagnostics.py',
+  'widgets/__init__.py',
+  'widgets/status_indicator.py',
+  'widgets/driver_card.py',
+  'widgets/preflight_banner.py',
+  'widgets/progress_overlay.py',
 ]
 
 install_data(verde_sources, install_dir: moduledir, preserve_path: true)

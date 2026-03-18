@@ -5,11 +5,107 @@ template $DriversPage: Adw.PreferencesPage {
   title: _("Drivers");
   icon-name: "application-x-firmware-symbolic";
 
-  Adw.PreferencesGroup {
-    Adw.StatusPage {
-      icon-name: "application-x-firmware-symbolic";
-      title: _("Drivers");
-      description: _("Driver management will appear here.");
+  /* ── Reboot Banner ── */
+  Adw.PreferencesGroup reboot_banner_group {
+    visible: false;
+
+    Adw.Banner reboot_banner {
+      title: _("Restart required to complete driver installation");
+      button-label: _("Restart\u2026");
+      revealed: true;
+
+      [signal button-clicked]
+      button-clicked => $_on_reboot_banner_clicked();
+    }
+  }
+
+  /* ── Current Driver ── */
+  Adw.PreferencesGroup current_driver_group {
+    title: _("Current Driver");
+
+    /* Shown when a driver is installed */
+    Adw.ExpanderRow current_driver_expander {
+      title: _("No Driver");
+      subtitle: _("Loading\u2026");
+      show-enable-switch: false;
+      visible: false;
+
+      Adw.ActionRow current_driver_cuda_row {
+        title: _("CUDA Compatibility");
+      }
+
+      Adw.ActionRow current_driver_context_row {
+        title: _("Driver Context");
+      }
+
+      Adw.ActionRow current_driver_kernel_row {
+        title: _("Kernel Module");
+      }
+    }
+
+    /* Shown when no driver is installed */
+    Adw.StatusPage no_driver_status {
+      icon-name: "system-software-install-symbolic";
+      title: _("No NVIDIA Driver Installed");
+      description: _("Install a driver from the Available Drivers section below to enable GPU acceleration.");
+      visible: false;
+    }
+  }
+
+  /* ── Available Drivers ── */
+  Adw.PreferencesGroup available_drivers_group {
+    title: _("Available Drivers");
+
+    /* Shown while loading */
+    Gtk.Spinner available_drivers_spinner {
+      spinning: true;
+      visible: false;
+      halign: center;
+      valign: center;
+      width-request: 32;
+      height-request: 32;
+    }
+
+    /* Shown when no drivers available */
+    Adw.StatusPage no_drivers_status {
+      icon-name: "dialog-information-symbolic";
+      title: _("No Drivers Found");
+      description: _("No compatible NVIDIA drivers were found for this system.");
+      visible: false;
+    }
+  }
+
+  /* ── Snapshots ── */
+  Adw.PreferencesGroup snapshots_group {
+    title: _("Snapshots");
+
+    Adw.StatusPage no_snapshots_status {
+      icon-name: "drive-harddisk-symbolic";
+      title: _("No Snapshots");
+      description: _("Driver snapshots will appear here after your first installation.");
+      visible: true;
+    }
+  }
+
+  /* ── Daemon Unreachable fallback ── */
+  Adw.PreferencesGroup unreachable_group {
+    visible: false;
+
+    Adw.StatusPage unreachable_status {
+      icon-name: "network-error-symbolic";
+      title: _("Service Unavailable");
+      description: _("The Verde system service is not responding. Check that the service is running and try again.");
+
+      Gtk.Button retry_button {
+        label: _("Retry");
+        halign: center;
+
+        accessibility {
+          label: _("Retry connecting to Verde service");
+        }
+
+        styles ["suggested-action", "pill"]
+      }
     }
   }
 }
