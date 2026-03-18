@@ -321,6 +321,7 @@ else:
             )
             self._process_group.add(self._process_expander)
             self._process_rows: list[Adw.ActionRow] = []
+            self._last_proc_snapshot: tuple = ()
 
         def _connect_signals(self) -> None:
             gs = self._gpu_state
@@ -524,7 +525,7 @@ else:
             new_pids = tuple(
                 (p.get("pid"), p.get("used_gpu_memory", 0), p.get("sm_util")) for p in procs
             )
-            if hasattr(self, "_last_proc_snapshot") and self._last_proc_snapshot == new_pids:
+            if self._last_proc_snapshot == new_pids:
                 return
             self._last_proc_snapshot = new_pids
 
