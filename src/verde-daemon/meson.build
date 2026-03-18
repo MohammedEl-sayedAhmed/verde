@@ -12,6 +12,7 @@ configure_file(
 daemon_sources = [
   '__init__.py',
   'nvml_wrapper.py',
+  'service.py',
 ]
 
 install_data(daemon_sources, install_dir: daemon_dir)
