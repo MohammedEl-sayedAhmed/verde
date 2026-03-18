@@ -125,6 +125,12 @@ install_data(
   install_dir: pkgdatadir,
 )
 
+# Polkit policy
+install_data(
+  'com.verde.policy',
+  install_dir: get_option('datadir') / 'polkit-1' / 'actions',
+)
+
 # systemd service unit
 configure_file(
   input: 'com.verde.Manager.systemd.service.in',

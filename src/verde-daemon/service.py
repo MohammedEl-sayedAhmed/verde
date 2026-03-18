@@ -9,12 +9,26 @@ from collections.abc import Callable
 from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
+from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
+from verde_daemon.validators import (
+    validate_driver_version,
+    validate_operation_name,
+    validate_snapshot_id,
+)
 
 log = logging.getLogger("verde-daemon.service")
 
 BUS_NAME = "com.verde.Manager"
 OBJECT_PATH = "/com/verde/Manager"
 INTERFACE_NAME = "com.verde.Manager"
+
+# Methods that require parameter validation and which validator to use.
+# Maps method_name -> list of (param_index, validator_func) tuples.
+_METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
+    "InstallDriver": [(0, validate_driver_version)],
+    "RollbackDriver": [(0, validate_snapshot_id)],
+    "GetPreflightCheck": [(0, validate_operation_name)],
+}
 
 
 class VerdeService:
@@ -137,14 +151,52 @@ class VerdeService:
         parameters: GLib.Variant,
         invocation: Gio.DBusMethodInvocation,
     ) -> None:
+        # Ping is a special case — no auth, no validation
         if method_name == "Ping":
             self._on_idle_reset()
             invocation.return_value(None)
-        else:
+            return
+
+        # Look up Polkit action for this method
+        action_id = METHOD_ACTION_MAP.get(method_name)
+        if action_id is None:
             invocation.return_dbus_error(
                 "org.freedesktop.DBus.Error.UnknownMethod",
-                f"Method {method_name} is not yet implemented",
+                f"Method {method_name} is not implemented",
             )
+            return
+
+        # Input validation BEFORE Polkit auth — reject garbage input
+        # before prompting the user for an admin password.
+        validators = _METHOD_VALIDATORS.get(method_name)
+        if validators and parameters is not None:
+            for param_idx, validator in validators:
+                try:
+                    value = parameters.get_child_value(param_idx).get_string()
+                    validator(value)
+                except ValueError as exc:
+                    invocation.return_dbus_error(
+                        "com.verde.Error.InvalidArgument",
+                        str(exc),
+                    )
+                    return
+
+        # Polkit authorization check
+        if not check_authorization(connection, sender, action_id):
+            invocation.return_dbus_error(
+                "com.verde.Error.NotAuthorized",
+                "Authorization required for this operation",
+            )
+            return
+
+        # Reset idle timer on successful authorization
+        self._on_idle_reset()
+
+        # Method dispatch — stubs until actual implementations in later stories
+        invocation.return_dbus_error(
+            "org.freedesktop.DBus.Error.UnknownMethod",
+            f"Method {method_name} is not yet implemented",
+        )
 
     # ------------------------------------------------------------------
     # D-Bus property handler

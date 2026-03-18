@@ -12,7 +12,9 @@ configure_file(
 daemon_sources = [
   '__init__.py',
   'nvml_wrapper.py',
+  'polkit.py',
   'service.py',
+  'validators.py',
 ]
 
 install_data(daemon_sources, install_dir: daemon_dir)

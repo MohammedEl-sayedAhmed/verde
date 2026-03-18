@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+  "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+  "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
+<policyconfig>
+  <vendor>Verde</vendor>
+  <vendor_url>https://github.com/verde-gpu/verde</vendor_url>
+
+  <!-- Read-only GPU monitoring queries -->
+  <action id="com.verde.monitor">
+    <description>Monitor GPU status</description>
+    <message>Authentication is required to monitor GPU status</message>
+    <defaults>
+      <allow_any>yes</allow_any>
+      <allow_inactive>yes</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Driver installation and rollback -->
+  <action id="com.verde.driver.manage">
+    <description>Manage NVIDIA GPU drivers</description>
+    <message>Authentication is required to manage NVIDIA GPU drivers</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Power and suspend configuration -->
+  <action id="com.verde.power.manage">
+    <description>Manage GPU power and suspend settings</description>
+    <message>Authentication is required to manage GPU power and suspend settings</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <!-- Diagnostic report generation -->
+  <action id="com.verde.diagnostics">
+    <description>Generate GPU diagnostic reports</description>
+    <message>Authentication is required to generate GPU diagnostic reports</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+</policyconfig>

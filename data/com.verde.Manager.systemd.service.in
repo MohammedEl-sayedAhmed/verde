@@ -8,5 +8,43 @@ BusName=com.verde.Manager
 ExecStart=@BINDIR@/verde-daemon
 TimeoutStopSec=5
 
+# Filesystem protection
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/verde /var/cache/apt /var/lib/dpkg /var/lib/apt /etc/modprobe.d /etc/initramfs-tools
+
+# Device access
+DeviceAllow=/dev/nvidia* rw
+DeviceAllow=char-drm rwm
+DevicePolicy=closed
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=no
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+
+# Network (daemon needs network for apt)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
+# Privilege control
+NoNewPrivileges=no
+MemoryDenyWriteExecute=yes
+
+# System call filtering
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount
+
+# Misc hardening
+ProtectHostname=yes
+ProtectClock=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+RemoveIPC=yes
+PrivateUsers=no
+
 [Install]
 WantedBy=multi-user.target

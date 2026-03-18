@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-import importlib
 import pathlib
-import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-# Add daemon source to path and register the package under its installed name.
+# verde_daemon package registration is handled by tests/conftest.py
 DAEMON_SRC = pathlib.Path(__file__).resolve().parents[2] / "src" / "verde-daemon"
-if str(DAEMON_SRC) not in sys.path:
-    sys.path.insert(0, str(DAEMON_SRC))
-
-# The directory is "verde-daemon" (hyphen) but installed as "verde_daemon" (underscore).
-# Register it so ``from verde_daemon import __version__`` works during tests.
-_pkg = importlib.import_module("__init__")  # loads verde-daemon/__init__.py
-sys.modules.setdefault("verde_daemon", _pkg)
 
 # Introspection XML used by all tests.
 _XML_PATH = pathlib.Path(__file__).resolve().parents[2] / "data" / "com.verde.Manager.xml"
@@ -130,7 +121,7 @@ class TestMethodDispatch:
     def test_unknown_method_does_not_reset_idle(
         self, service, mock_invocation, mock_connection, idle_reset
     ):
-        """Unimplemented methods do not reset idle timer (prevents DoS)."""
+        """Unknown methods do not reset idle timer (prevents DoS)."""
         service._on_bus_acquired(mock_connection, "com.verde.Manager")
 
         service._handle_method_call(
@@ -138,14 +129,14 @@ class TestMethodDispatch:
             ":1.42",
             "/com/verde/Manager",
             "com.verde.Manager",
-            "GetGPUInfo",
+            "NonexistentMethod",
             None,
             mock_invocation,
         )
         idle_reset.assert_not_called()
 
     def test_unknown_method_returns_error(self, service, mock_invocation, mock_connection):
-        """Unimplemented methods return D-Bus UnknownMethod error."""
+        """Unknown methods return D-Bus UnknownMethod error."""
         service._on_bus_acquired(mock_connection, "com.verde.Manager")
 
         service._handle_method_call(
@@ -153,7 +144,7 @@ class TestMethodDispatch:
             ":1.42",
             "/com/verde/Manager",
             "com.verde.Manager",
-            "GetGPUInfo",
+            "NonexistentMethod",
             None,
             mock_invocation,
         )
