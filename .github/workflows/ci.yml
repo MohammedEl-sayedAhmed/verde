@@ -51,7 +51,7 @@ jobs:
         run: ruff format --check src/ tests/
 
       - name: Type check (mypy)
-        run: mypy src/ --ignore-missing-imports
+        run: mypy src/verde/ --ignore-missing-imports && mypy src/verde-daemon/*.py --ignore-missing-imports --follow-imports=skip
 
       - name: Unit tests
         run: pytest tests/unit/ -v
