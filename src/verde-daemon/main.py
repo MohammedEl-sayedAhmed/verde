@@ -78,13 +78,17 @@ def main() -> int:
 
     # D-Bus service registration
     # Import here to avoid import-time side effects during testing
+    from verde_daemon.audit import AuditLogger
     from verde_daemon.service import VerdeService
+
+    audit_logger = AuditLogger()
 
     xml_path = "@pkgdatadir@/com.verde.Manager.xml"
     service = VerdeService(
         loop=loop,
         on_idle_reset=idle_timer.reset,
         xml_path=xml_path,
+        audit_logger=audit_logger,
     )
     service.start()
 

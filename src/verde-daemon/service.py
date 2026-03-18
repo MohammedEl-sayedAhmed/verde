@@ -9,6 +9,7 @@ from collections.abc import Callable
 from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
+from verde_daemon.audit import AuditLogger
 from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
 from verde_daemon.validators import (
     validate_driver_version,
@@ -55,9 +56,11 @@ class VerdeService:
         *,
         introspection_xml: str | None = None,
         xml_path: str | pathlib.Path | None = None,
+        audit_logger: AuditLogger | None = None,
     ) -> None:
         self._loop = loop
         self._on_idle_reset = on_idle_reset
+        self._audit = audit_logger
         self._connection: Gio.DBusConnection | None = None
         self._registration_id: int = 0
         self._owner_id: int = 0
