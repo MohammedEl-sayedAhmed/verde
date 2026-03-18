@@ -6,9 +6,7 @@ from gi.repository import Adw, Gio, Gtk
 def _has_ui_resource() -> bool:
     """Check if Blueprint-compiled UI template is available in GResource."""
     try:
-        Gio.resources_lookup_data(
-            "/com/verde/app/ui/window.ui", Gio.ResourceLookupFlags.NONE
-        )
+        Gio.resources_lookup_data("/com/verde/app/ui/window.ui", Gio.ResourceLookupFlags.NONE)
         return True
     except Exception:
         return False

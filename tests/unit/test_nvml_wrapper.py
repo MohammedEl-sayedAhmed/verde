@@ -16,22 +16,15 @@ if str(DAEMON_SRC) not in sys.path:
 
 from nvml_wrapper import (  # noqa: E402
     NVML_CLOCK_GRAPHICS,
-    NVML_CLOCK_MEM,
-    NVML_CLOCK_SM,
     NVML_ERROR_GPU_IS_LOST,
     NVML_ERROR_NOT_FOUND,
     NVML_ERROR_NOT_SUPPORTED,
     NVML_ERROR_UNKNOWN,
     NVML_SUCCESS,
-    NvmlMemory,
-    NvmlPciInfo,
-    NvmlProcessInfo,
-    NvmlUtilization,
     NvmlWrapper,
     Unavailable,
     _Unavailable,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers to build a mock NVML library
@@ -101,7 +94,9 @@ def _make_mock_lib() -> MagicMock:
     # Clock info
     def _get_clock(handle, clock_type, p_clock):
         clocks = {0: 2100, 1: 2100, 2: 10501}
-        p_clock._obj.value = clocks.get(clock_type.value if hasattr(clock_type, "value") else clock_type, 0)
+        p_clock._obj.value = clocks.get(
+            clock_type.value if hasattr(clock_type, "value") else clock_type, 0
+        )
         return NVML_SUCCESS
 
     lib.nvmlDeviceGetClockInfo.side_effect = _get_clock

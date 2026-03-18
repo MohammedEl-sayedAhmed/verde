@@ -241,9 +241,7 @@ class NvmlWrapper:
         )
         return temp.value if ret == NVML_SUCCESS else Unavailable
 
-    def get_clock_info(
-        self, handle: ctypes.c_void_p, clock_type: int
-    ) -> int | _Unavailable:
+    def get_clock_info(self, handle: ctypes.c_void_p, clock_type: int) -> int | _Unavailable:
         clock = ctypes.c_uint()
         ret = self._call(
             "nvmlDeviceGetClockInfo",
@@ -255,27 +253,19 @@ class NvmlWrapper:
 
     def get_performance_state(self, handle: ctypes.c_void_p) -> int | _Unavailable:
         pstate = ctypes.c_uint()
-        ret = self._call(
-            "nvmlDeviceGetPerformanceState", handle, ctypes.byref(pstate)
-        )
+        ret = self._call("nvmlDeviceGetPerformanceState", handle, ctypes.byref(pstate))
         return pstate.value if ret == NVML_SUCCESS else Unavailable
 
-    def get_memory_info(
-        self, handle: ctypes.c_void_p
-    ) -> dict[str, int] | _Unavailable:
+    def get_memory_info(self, handle: ctypes.c_void_p) -> dict[str, int] | _Unavailable:
         mem = NvmlMemory()
         ret = self._call("nvmlDeviceGetMemoryInfo", handle, ctypes.byref(mem))
         if ret != NVML_SUCCESS:
             return Unavailable
         return {"total": mem.total, "used": mem.used, "free": mem.free}
 
-    def get_utilization(
-        self, handle: ctypes.c_void_p
-    ) -> dict[str, int] | _Unavailable:
+    def get_utilization(self, handle: ctypes.c_void_p) -> dict[str, int] | _Unavailable:
         util = NvmlUtilization()
-        ret = self._call(
-            "nvmlDeviceGetUtilizationRates", handle, ctypes.byref(util)
-        )
+        ret = self._call("nvmlDeviceGetUtilizationRates", handle, ctypes.byref(util))
         if ret != NVML_SUCCESS:
             return Unavailable
         return {"gpu": util.gpu, "memory": util.memory}
@@ -287,16 +277,12 @@ class NvmlWrapper:
 
     def get_power_limit(self, handle: ctypes.c_void_p) -> int | _Unavailable:
         limit = ctypes.c_uint()
-        ret = self._call(
-            "nvmlDeviceGetEnforcedPowerLimit", handle, ctypes.byref(limit)
-        )
+        ret = self._call("nvmlDeviceGetEnforcedPowerLimit", handle, ctypes.byref(limit))
         return limit.value if ret == NVML_SUCCESS else Unavailable
 
     # -- hardware info & advanced -------------------------------------------
 
-    def get_pci_info(
-        self, handle: ctypes.c_void_p
-    ) -> dict[str, str | int] | _Unavailable:
+    def get_pci_info(self, handle: ctypes.c_void_p) -> dict[str, str | int] | _Unavailable:
         pci = NvmlPciInfo()
         ret = self._call("nvmlDeviceGetPciInfo_v3", handle, ctypes.byref(pci))
         if ret != NVML_SUCCESS:
@@ -353,9 +339,7 @@ class NvmlWrapper:
 
     def get_throttle_reasons(self, handle: ctypes.c_void_p) -> int | _Unavailable:
         reasons = ctypes.c_ulonglong()
-        ret = self._call(
-            "nvmlDeviceGetCurrentThrottleReasons", handle, ctypes.byref(reasons)
-        )
+        ret = self._call("nvmlDeviceGetCurrentThrottleReasons", handle, ctypes.byref(reasons))
         return reasons.value if ret == NVML_SUCCESS else Unavailable
 
     def _query_processes(
@@ -386,9 +370,7 @@ class NvmlWrapper:
             for i in range(n)
         ]
 
-    def get_running_processes(
-        self, handle: ctypes.c_void_p
-    ) -> list[dict] | _Unavailable:
+    def get_running_processes(self, handle: ctypes.c_void_p) -> list[dict] | _Unavailable:
         result: list[dict] = []
         for func_name, proc_type in (
             ("nvmlDeviceGetComputeRunningProcesses_v3", "compute"),

@@ -3,7 +3,6 @@
 import ast
 import pathlib
 
-
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 VERDE_SRC = PROJECT_ROOT / "src" / "verde"
 DAEMON_SRC = PROJECT_ROOT / "src" / "verde-daemon"
@@ -18,9 +17,8 @@ def _collect_imports(package_dir: pathlib.Path) -> set[str]:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     imports.add(alias.name.split(".")[0])
-            elif isinstance(node, ast.ImportFrom):
-                if node.module:
-                    imports.add(node.module.split(".")[0])
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imports.add(node.module.split(".")[0])
     return imports
 
 
