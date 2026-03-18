@@ -2,7 +2,7 @@
 <gresources>
   <gresource prefix="/com/verde/app">
     <file alias="ui/window.ui">window.ui</file>
-    <file alias="ui/dashboard_page.ui">dashboard_page.ui</file>
+    <!-- dashboard_page.ui excluded: Story 1.9 builds programmatically -->
     <file alias="ui/drivers_page.ui">drivers_page.ui</file>
     <file alias="ui/power_page.ui">power_page.ui</file>
     <file alias="ui/diagnostics_page.ui">diagnostics_page.ui</file>

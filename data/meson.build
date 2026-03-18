@@ -5,7 +5,9 @@ blueprint_compiler = find_program('blueprint-compiler', required: false)
 if blueprint_compiler.found()
   blueprint_sources = files(
     'ui/window.blp',
-    'ui/dashboard_page.blp',
+    # dashboard_page.blp excluded — Story 1.9 builds the dashboard
+    # programmatically via bind_state(); re-add when the template
+    # version is fully wired with live-data support.
     'ui/drivers_page.blp',
     'ui/power_page.blp',
     'ui/diagnostics_page.blp',
@@ -13,7 +15,6 @@ if blueprint_compiler.found()
 
   blueprint_outputs = [
     'window.ui',
-    'dashboard_page.ui',
     'drivers_page.ui',
     'power_page.ui',
     'diagnostics_page.ui',

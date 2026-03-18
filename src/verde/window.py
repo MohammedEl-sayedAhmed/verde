@@ -177,6 +177,9 @@ class VerdeApplication(Adw.Application):
         win = self.props.active_window
         if not win:
             win = VerdeWindow(application=self)
+            dashboard = win.view_stack.get_child_by_name("dashboard")
+            if hasattr(dashboard, "bind_state"):
+                dashboard.bind_state(self.gpu_state)
         win.present()
         self.dbus_client.connect_async()
 
