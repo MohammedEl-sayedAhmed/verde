@@ -103,7 +103,7 @@ class GPUState(GObject.Object):
                 return
             vtype = prop.value_type.name
             if vtype == "gint":
-                value = int(value)  # type: ignore[arg-type]
+                value = int(value)  # type: ignore[call-overload]
             elif vtype in ("gdouble", "gfloat"):
                 value = float(value)  # type: ignore[arg-type]
             elif vtype == "gchararray":
@@ -132,7 +132,7 @@ class GPUState(GObject.Object):
             if isinstance(val, int):
                 self._set_if_changed("p-state", f"P{val}")
 
-        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def reset(self) -> None:
         """Reset all stats properties to defaults (called on disconnect)."""
@@ -142,4 +142,4 @@ class GPUState(GObject.Object):
         """Apply reset on the main thread."""
         for prop_name, default in _STAT_DEFAULTS.items():
             self.set_property(prop_name, default)
-        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]

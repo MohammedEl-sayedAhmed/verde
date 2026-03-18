@@ -118,7 +118,7 @@ class VerdeDBusClient(GObject.Object):
         """Retry connection callback."""
         self._retry_source_id = None
         self.connect_async()
-        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def close(self) -> None:
         """Clean up proxy, signal handlers, and cancel pending retries."""
@@ -158,7 +158,7 @@ class VerdeDBusClient(GObject.Object):
     def _update_reboot_state(self, required: bool, reason: str) -> bool:
         self._gpu_state._set_if_changed("reboot-required", required)
         self._gpu_state._set_if_changed("reboot-reason", reason)
-        return GLib.SOURCE_REMOVE  # type: ignore[return-value]
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     # ── Method calls ─────────────────────────────────────────────────
 
