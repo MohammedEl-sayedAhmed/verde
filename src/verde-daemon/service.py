@@ -16,6 +16,7 @@ from verde_daemon.degraded_states import (
     detect_degraded_state,
     detect_driver_type,
 )
+from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
 from verde_daemon.validators import (
@@ -42,7 +43,7 @@ _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
 
 # Methods that return a{sv} GPU data — dispatched after Polkit auth.
 _GPU_DATA_METHODS = frozenset(
-    {"GetGPUInfo", "GetGPUStats", "GetCurrentDriver", "GetDegradedState"}
+    {"GetGPUInfo", "GetGPUStats", "GetCurrentDriver", "GetDegradedState", "ListAvailableDrivers"}
 )
 
 
@@ -72,6 +73,7 @@ class VerdeService:
         xml_path: str | pathlib.Path | None = None,
         audit_logger: AuditLogger | None = None,
         nvml: NvmlWrapper | None = None,
+        driver_manager: DriverManager | None = None,
     ) -> None:
         self._loop = loop
         self._on_idle_reset = on_idle_reset
@@ -93,6 +95,19 @@ class VerdeService:
             self._last_gpu_available = self._nvml_available
         except Exception:
             log.warning("NVML initialization failed — running in degraded mode")
+
+        # Driver manager — injected for testing, created automatically otherwise
+        if driver_manager is not None:
+            self._driver_manager = driver_manager
+        else:
+            gpu_name = ""
+            if self._nvml_available:
+                handle = self._nvml.get_device_by_index(0)
+                if handle is not Unavailable:
+                    name = self._nvml.get_device_name(handle)
+                    if name is not Unavailable:
+                        gpu_name = name
+            self._driver_manager = DriverManager(gpu_name=gpu_name)
 
         # Degraded state tracking — re-detected each poll cycle
         self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
@@ -329,7 +344,7 @@ class VerdeService:
         )
 
     def _dispatch_gpu_method(self, method_name: str, invocation: Gio.DBusMethodInvocation) -> None:
-        """Dispatch GPU data methods that return a{sv}."""
+        """Dispatch GPU data methods that return a{sv} or aa{sv}."""
         try:
             if method_name == "GetGPUInfo":
                 result = self._build_gpu_info()
@@ -339,6 +354,9 @@ class VerdeService:
                 result = self._build_current_driver()
             elif method_name == "GetDegradedState":
                 result = self._build_degraded_state_response()
+            elif method_name == "ListAvailableDrivers":
+                self._dispatch_list_available_drivers(invocation)
+                return
             else:
                 invocation.return_dbus_error(
                     "org.freedesktop.DBus.Error.UnknownMethod",
@@ -348,10 +366,12 @@ class VerdeService:
             invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
         except Exception as exc:
             log.exception("Internal error in %s", method_name)
-            invocation.return_dbus_error(
-                "com.verde.Manager.InternalError",
-                str(exc),
-            )
+            error_name = "com.verde.Manager.InternalError"
+            if method_name in ("GetCurrentDriver", "ListAvailableDrivers") and isinstance(
+                exc, (OSError, RuntimeError)
+            ):
+                error_name = "com.verde.Error.AptUnavailable"
+            invocation.return_dbus_error(error_name, str(exc))
 
     # ------------------------------------------------------------------
     # GPU data builders
@@ -522,31 +542,90 @@ class VerdeService:
         return result
 
     def _build_current_driver(self) -> dict[str, GLib.Variant]:
-        """Build GetCurrentDriver response."""
-        driver_type = self._detect_driver_type()
+        """Build GetCurrentDriver response using DriverManager."""
         reboot_required, reboot_reason = self._detect_reboot_required()
 
-        if not self._nvml_available:
-            resp = self._unavailable_response("NVIDIA driver not loaded")
-            resp["driver_type"] = GLib.Variant("s", driver_type)
-            resp["reboot_required"] = GLib.Variant("b", reboot_required)
-            resp["reboot_reason"] = GLib.Variant("s", reboot_reason)
-            return resp
+        try:
+            driver_info = self._driver_manager.get_current_driver()
+        except Exception:
+            log.exception("DriverManager.get_current_driver failed")
+            raise  # Will be caught by _dispatch_gpu_method's error handler
 
         result: dict[str, GLib.Variant] = {
-            "available": GLib.Variant("b", True),
-            "driver_type": GLib.Variant("s", driver_type),
+            "available": GLib.Variant("b", bool(driver_info.get("loaded"))),
+            "driver_type": GLib.Variant("s", driver_info.get("driver_type", "none")),
             "reboot_required": GLib.Variant("b", reboot_required),
             "reboot_reason": GLib.Variant("s", reboot_reason),
         }
+        if driver_info.get("version"):
+            result["version"] = GLib.Variant("s", driver_info["version"])
+        if driver_info.get("package_name"):
+            result["package_name"] = GLib.Variant("s", driver_info["package_name"])
+        if driver_info.get("variant"):
+            result["variant"] = GLib.Variant("s", driver_info["variant"])
+        if driver_info.get("module_type"):
+            result["module_type"] = GLib.Variant("s", driver_info["module_type"])
+        result["loaded"] = GLib.Variant("b", driver_info.get("loaded", False))
 
-        version = self._nvml.get_driver_version()
-        if version is not Unavailable:
-            result["driver_version"] = GLib.Variant("s", version)
-        else:
-            result["driver_version_available"] = GLib.Variant("b", False)
+        # Keep NVML driver_version for backward compatibility
+        if self._nvml_available:
+            version = self._nvml.get_driver_version()
+            if version is not Unavailable:
+                result["driver_version"] = GLib.Variant("s", version)
 
         return result
+
+    def _dispatch_list_available_drivers(self, invocation: Gio.DBusMethodInvocation) -> None:
+        """Handle ListAvailableDrivers — returns aa{sv}."""
+        try:
+            data = self._driver_manager.list_available_drivers()
+        except Exception as exc:
+            log.exception("DriverManager.list_available_drivers failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.AptUnavailable",
+                str(exc),
+            )
+            return
+
+        driver_variants: list[dict[str, GLib.Variant]] = []
+        for d in data.get("drivers", []):
+            dv: dict[str, GLib.Variant] = {
+                "version": GLib.Variant("s", d.get("version", "")),
+                "variant": GLib.Variant("s", d.get("variant", "")),
+                "package_name": GLib.Variant("s", d.get("package_name", "")),
+                "installed": GLib.Variant("b", d.get("installed", False)),
+                "recommended": GLib.Variant("b", d.get("recommended", False)),
+                "held": GLib.Variant("b", d.get("held", False)),
+                "module_type": GLib.Variant("s", d.get("module_type", "")),
+                "module_status": GLib.Variant("s", d.get("module_status", "")),
+                "repository": GLib.Variant("s", d.get("repository", "")),
+            }
+            if d.get("hold_message"):
+                dv["hold_message"] = GLib.Variant("s", d["hold_message"])
+            if d.get("recommendation_reason"):
+                dv["recommendation_reason"] = GLib.Variant("s", d["recommendation_reason"])
+            if d.get("cuda_compatibility"):
+                dv["cuda_compatibility"] = GLib.Variant("s", d["cuda_compatibility"])
+            if "known_issues" in d:
+                dv["known_issues"] = GLib.Variant("s", d["known_issues"])
+            driver_variants.append(dv)
+
+        # Build top-level metadata dict
+        meta: dict[str, GLib.Variant] = {}
+        missing = data.get("missing_repositories", [])
+        if missing:
+            meta["missing_repositories"] = GLib.Variant("as", missing)
+        meta["run_file_detected"] = GLib.Variant("b", data.get("run_file_detected", False))
+        if data.get("run_file_message"):
+            meta["run_file_message"] = GLib.Variant("s", data["run_file_message"])
+
+        # Return (aa{sv}a{sv}) — drivers array + metadata dict
+        invocation.return_value(
+            GLib.Variant.new_tuple(
+                GLib.Variant("aa{sv}", driver_variants),
+                GLib.Variant("a{sv}", meta),
+            )
+        )
 
     def _build_degraded_state_response(self) -> dict[str, GLib.Variant]:
         """Build GetDegradedState response from current state."""

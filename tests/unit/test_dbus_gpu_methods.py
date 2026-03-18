@@ -113,22 +113,54 @@ def idle_reset():
 
 
 @pytest.fixture
-def service(mock_loop, idle_reset, mock_nvml):
+def mock_driver_manager():
+    """Mock DriverManager for D-Bus tests."""
+    dm = MagicMock()
+    dm.get_current_driver.return_value = {
+        "version": "560.35.03",
+        "driver_type": "proprietary",
+        "package_name": "nvidia-driver-560",
+        "variant": "desktop",
+        "module_type": "dkms",
+        "loaded": True,
+    }
+    dm.list_available_drivers.return_value = {
+        "drivers": [],
+        "missing_repositories": [],
+        "run_file_detected": False,
+        "run_file_message": "",
+    }
+    return dm
+
+
+@pytest.fixture
+def service(mock_loop, idle_reset, mock_nvml, mock_driver_manager):
     return VerdeService(
         loop=mock_loop,
         on_idle_reset=idle_reset,
         introspection_xml=_XML,
         nvml=mock_nvml,
+        driver_manager=mock_driver_manager,
     )
 
 
 @pytest.fixture
-def service_degraded(mock_loop, idle_reset, mock_nvml_unavailable):
+def service_degraded(mock_loop, idle_reset, mock_nvml_unavailable, mock_driver_manager):
+    # In degraded mode, driver manager returns no driver
+    mock_driver_manager.get_current_driver.return_value = {
+        "version": "",
+        "driver_type": "none",
+        "package_name": "",
+        "variant": "",
+        "module_type": "",
+        "loaded": False,
+    }
     return VerdeService(
         loop=mock_loop,
         on_idle_reset=idle_reset,
         introspection_xml=_XML,
         nvml=mock_nvml_unavailable,
+        driver_manager=mock_driver_manager,
     )
 
 
@@ -632,7 +664,7 @@ class TestMethodDispatchIntegration:
             ":1.42",
             "/com/verde/Manager",
             "com.verde.Manager",
-            "ListAvailableDrivers",
+            "SomeUnimplementedMethod",
             None,
             mock_invocation,
         )
@@ -765,7 +797,6 @@ class TestPatchP5CurrentDriverUnavailable:
         _call_method(service_degraded, mock_connection, mock_invocation, "GetCurrentDriver")
         result = mock_invocation.return_value.call_args[0][0].get_child_value(0).unpack()
         assert result["available"] is False
-        assert "reason" in result
         # driver_type and reboot info still present in degraded mode
         assert "driver_type" in result
         assert "reboot_required" in result

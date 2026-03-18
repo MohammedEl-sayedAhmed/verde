@@ -13,6 +13,7 @@ daemon_sources = [
   '__init__.py',
   'audit.py',
   'degraded_states.py',
+  'driver_manager.py',
   'nvml_wrapper.py',
   'polkit.py',
   'service.py',

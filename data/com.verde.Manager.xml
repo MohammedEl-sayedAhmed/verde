@@ -21,6 +21,7 @@
     </method>
     <method name="ListAvailableDrivers">
       <arg name="drivers" type="aa{sv}" direction="out"/>
+      <arg name="metadata" type="a{sv}" direction="out"/>
     </method>
     <method name="GetPowerStatus">
       <arg name="status" type="a{sv}" direction="out"/>

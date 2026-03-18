@@ -29,7 +29,7 @@ sys.modules["verde_daemon"] = _pkg
 # ``from verde_daemon.nvml_wrapper import X`` resolve to the same module
 # object.  Without this, singletons like ``Unavailable`` have different
 # identities across the two import paths, breaking ``is`` checks.
-for _name in ("nvml_wrapper", "polkit", "validators", "service", "audit"):
+for _name in ("nvml_wrapper", "polkit", "validators", "service", "audit", "driver_manager"):
     _mod_path = DAEMON_SRC / f"{_name}.py"
     if _mod_path.exists():
         _submod = importlib.import_module(_name)
