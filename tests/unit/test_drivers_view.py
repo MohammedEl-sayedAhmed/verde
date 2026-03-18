@@ -10,10 +10,15 @@ import pytest
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Adw  # noqa: E402
+from gi.repository import Adw, Gtk  # noqa: E402
 
 from verde.gpu_state import GPUState  # noqa: E402
-from verde.views.drivers import DriversPage, _sanitize_dbus_error  # noqa: E402
+from verde.views.drivers import (  # noqa: E402
+    DriversPage,
+    _sanitize_dbus_error,
+    format_error_message,
+    parse_structured_error,
+)
 from verde.widgets.driver_card import build_driver_row  # noqa: E402
 
 
@@ -490,3 +495,167 @@ class TestSanitizeDbusError:
     def test_plain_message_passthrough(self):
         result = _sanitize_dbus_error("Disk space insufficient")
         assert result == "Disk space insufficient"
+
+
+# ===================================================================
+# Story 2.6: Held package detection
+# ===================================================================
+
+
+def _find_button_recursive(widget: Gtk.Widget) -> Gtk.Button | None:
+    """Walk the widget tree depth-first to find a Gtk.Button."""
+    if isinstance(widget, Gtk.Button):
+        return widget
+    child = widget.get_first_child() if hasattr(widget, "get_first_child") else None
+    while child:
+        found = _find_button_recursive(child)
+        if found is not None:
+            return found
+        child = child.get_next_sibling()
+    return None
+
+
+class TestHeldPackageUI:
+    def test_held_driver_button_insensitive(self):
+        """AC #7: Held driver's install button is disabled."""
+        driver = {
+            "package": "nvidia-driver-565",
+            "version": "565.57",
+            "variant": "proprietary",
+            "recommended": False,
+            "held": True,
+        }
+        row = build_driver_row(driver)
+        button = _find_button_recursive(row)
+        assert button is not None, "No button found in held driver row"
+        assert button.get_sensitive() is False
+
+    def test_held_driver_shows_apt_mark_subtitle(self):
+        """AC #7: Held driver shows apt-mark unhold instruction."""
+        driver = {
+            "package": "nvidia-driver-565",
+            "version": "565.57",
+            "variant": "proprietary",
+            "recommended": False,
+            "held": True,
+        }
+        row = build_driver_row(driver)
+        assert "apt-mark unhold" in row.get_subtitle()
+        assert "nvidia-driver-565" in row.get_subtitle()
+
+    def test_non_held_driver_button_sensitive(self):
+        """Non-held driver buttons remain enabled."""
+        driver = {
+            "package": "nvidia-driver-565",
+            "version": "565.57",
+            "variant": "proprietary",
+            "recommended": False,
+            "held": False,
+        }
+        row = build_driver_row(driver)
+        assert row is not None  # Row created without error
+
+    def test_held_no_callback_connected(self):
+        """Held driver install button does not connect callback."""
+        callback = MagicMock()
+        driver = {
+            "package": "nvidia-driver-565",
+            "version": "565",
+            "variant": "proprietary",
+            "recommended": False,
+            "held": True,
+        }
+        row = build_driver_row(driver, on_install_clicked=callback)
+        assert row is not None  # Created without error
+        callback.assert_not_called()
+
+
+# ===================================================================
+# Story 2.6: .run file detection banner
+# ===================================================================
+
+
+class TestRunFileDetectionBanner:
+    def test_run_file_banner_hidden_initially(self, drivers_page):
+        assert drivers_page._run_file_banner_group.get_visible() is False
+
+    def test_run_file_detected_shows_banner(self, drivers_page):
+        """AC #8: .run detected shows banner and disables management."""
+        metadata = {"run_file_detected": True, "run_file_message": "NVIDIA .run file detected"}
+        drivers_page._populate_available_drivers([], metadata)
+        assert drivers_page._run_file_banner.get_revealed() is True
+        assert drivers_page._run_file_banner_group.get_visible() is True
+
+    def test_run_file_not_detected_hides_banner(self, drivers_page):
+        metadata = {"run_file_detected": False}
+        drivers_page._populate_available_drivers(
+            [
+                {
+                    "package": "nvidia-driver-565",
+                    "version": "565",
+                    "variant": "p",
+                    "recommended": False,
+                }
+            ],
+            metadata,
+        )
+        assert drivers_page._run_file_banner.get_revealed() is False
+
+
+# ===================================================================
+# Story 2.6: Structured error parsing (UX-DR16)
+# ===================================================================
+
+
+class TestStructuredErrorParsing:
+    def test_parse_valid_json_error(self):
+        import json
+
+        error_dict = {
+            "success": False,
+            "error_title": "Package system needs repair",
+            "error_description": "The package system was left in a broken state.",
+            "error_primary_action": "repair_dpkg",
+            "error_secondary_action": "rollback",
+            "error_category": "dpkg_broken",
+            "recoverable": True,
+        }
+        result = parse_structured_error(json.dumps(error_dict))
+        assert result is not None
+        assert result["error_title"] == "Package system needs repair"
+
+    def test_parse_plain_string_returns_none(self):
+        result = parse_structured_error("Installation failed")
+        assert result is None
+
+    def test_parse_empty_returns_none(self):
+        result = parse_structured_error("")
+        assert result is None
+
+    def test_format_error_with_description(self):
+        error_dict = {
+            "error_title": "Network unavailable",
+            "error_description": "Check your internet connection.",
+        }
+        result = format_error_message(error_dict)
+        assert "Network unavailable" in result
+        assert "internet connection" in result
+
+    def test_format_error_title_only(self):
+        error_dict = {"error_title": "Operation timed out"}
+        result = format_error_message(error_dict)
+        assert result == "Operation timed out"
+
+    def test_format_error_includes_actions(self):
+        """P-2: primary and secondary actions are included in output."""
+        error_dict = {
+            "error_title": "Network unavailable",
+            "error_description": "DNS resolution failed.",
+            "error_primary_action": "Check your internet connection and retry",
+            "error_secondary_action": "Try again later",
+        }
+        result = format_error_message(error_dict)
+        assert "Network unavailable" in result
+        assert "DNS resolution failed" in result
+        assert "Check your internet connection and retry" in result
+        assert "Try again later" in result

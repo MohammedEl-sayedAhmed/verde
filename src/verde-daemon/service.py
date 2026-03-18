@@ -32,7 +32,13 @@ from verde_daemon.degraded_states import (
 )
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
-from verde_daemon.polkit import METHOD_ACTION_MAP, PolkitAgentMissing, check_authorization
+from verde_daemon.polkit import (
+    METHOD_ACTION_MAP,
+    PolkitAgentMissing,
+    PolkitCancelled,
+    PolkitTimeout,
+    check_authorization,
+)
 from verde_daemon.preflight import PreflightChecker
 from verde_daemon.validators import (
     validate_driver_version,
@@ -104,6 +110,8 @@ class VerdeService:
         # Concurrency guard for driver operations (FR40)
         self._operation_in_progress: bool = False
         self._current_op_id: str | None = None
+        self._current_op_type: str | None = None
+        self._current_op_started: float | None = None
 
         # Startup error from interrupted operation detection (FR48)
         self._startup_error = None
@@ -386,6 +394,22 @@ class VerdeService:
                     error="Polkit authentication agent not available",
                 )
             return
+        except PolkitCancelled:
+            log.info("Polkit authentication cancelled for method %s from %s", method_name, sender)
+            invocation.return_dbus_error(
+                "com.verde.Error.PolkitCancelled",
+                "Authentication was cancelled by the user.",
+            )
+            return
+        except PolkitTimeout:
+            log.warning(
+                "Polkit authentication timed out for method %s from %s", method_name, sender
+            )
+            invocation.return_dbus_error(
+                "com.verde.Error.PolkitTimeout",
+                "Authentication timed out. Please try again.",
+            )
+            return
         if not authorized:
             invocation.return_dbus_error(
                 "com.verde.Error.NotAuthorized",
@@ -501,7 +525,7 @@ class VerdeService:
         if self._operation_in_progress:
             invocation.return_dbus_error(
                 "com.verde.Error.OperationInProgress",
-                "Another operation is already in progress",
+                self._operation_in_progress_message(),
             )
             return
 
@@ -527,6 +551,8 @@ class VerdeService:
         self._operation_in_progress = True
         op_id = uuid.uuid4().hex[:12]
         self._current_op_id = op_id
+        self._current_op_type = "InstallDriver"
+        self._current_op_started = time.monotonic()
 
         # Return op_id immediately (NFR-PERF-13: <500ms)
         invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
@@ -573,10 +599,17 @@ class VerdeService:
 
                 # Emit completion signals
                 self._emit_signal("OperationComplete", "(sbs)", (op_id, True, message))
+
+                # Detect reboot requirement with specific reason (FR43)
+                reboot_needed, reboot_reason = self._detect_reboot_required()
+                if not reboot_needed:
+                    # Driver install always requires at least a module reload
+                    reboot_needed = True
+                    reboot_reason = "Reboot required to load new driver"
                 self._emit_signal(
                     "RebootRequired",
                     "(bs)",
-                    (True, "Reboot required to load new driver"),
+                    (reboot_needed, reboot_reason),
                 )
             else:
                 # Classify the error for actionable response (FR46)
@@ -651,6 +684,8 @@ class VerdeService:
             def _release_guard() -> bool:
                 self._operation_in_progress = False
                 self._current_op_id = None
+                self._current_op_type = None
+                self._current_op_started = None
                 self._on_idle_release()
                 return GLib.SOURCE_REMOVE
 
@@ -831,6 +866,20 @@ class VerdeService:
                 os.close(fd)
 
     # ------------------------------------------------------------------
+    # Concurrency guard enrichment (FR40)
+    # ------------------------------------------------------------------
+
+    def _operation_in_progress_message(self) -> str:
+        """Build enriched error message for OperationInProgress errors."""
+        parts = ["Another operation is already in progress"]
+        if self._current_op_type:
+            parts.append(f"(type: {self._current_op_type})")
+        if self._current_op_started is not None:
+            elapsed = int(time.monotonic() - self._current_op_started)
+            parts.append(f"started {elapsed} seconds ago")
+        return " — ".join(parts) if len(parts) > 1 else parts[0]
+
+    # ------------------------------------------------------------------
     # Startup error (FR48 — interrupted operation)
     # ------------------------------------------------------------------
 
@@ -862,7 +911,7 @@ class VerdeService:
         if self._operation_in_progress:
             invocation.return_dbus_error(
                 "com.verde.Error.OperationInProgress",
-                "Another operation is already in progress",
+                self._operation_in_progress_message(),
             )
             return
 
@@ -881,6 +930,8 @@ class VerdeService:
         self._operation_in_progress = True
         op_id = uuid.uuid4().hex[:12]
         self._current_op_id = op_id
+        self._current_op_type = "RepairDpkg"
+        self._current_op_started = time.monotonic()
 
         invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
 
@@ -969,6 +1020,8 @@ class VerdeService:
                 def _release() -> bool:
                     self._operation_in_progress = False
                     self._current_op_id = None
+                    self._current_op_type = None
+                    self._current_op_started = None
                     self._on_idle_release()
                     return GLib.SOURCE_REMOVE
 
@@ -1053,6 +1106,13 @@ class VerdeService:
         else:
             result["cuda_toolkit_version_available"] = GLib.Variant("b", False)
 
+        # Performance mode (FR72)
+        perf_mode = info.get("performance_mode")
+        if perf_mode is not None:
+            result["performance_mode"] = GLib.Variant("s", perf_mode)
+        else:
+            result["performance_mode"] = GLib.Variant("s", "Not Supported")
+
         # Multi-GPU device enumeration
         if dc is not None and dc is not Unavailable and int(dc) > 0:
             devices = []
@@ -1098,6 +1158,13 @@ class VerdeService:
         _set_int64(result, "power_usage", stats.get("power_usage"))
         _set_int64(result, "power_limit", stats.get("power_limit"))
         _set_int64(result, "memory_errors", stats.get("memory_errors"))
+
+        # Performance mode (human-readable)
+        perf_mode = stats.get("performance_mode")
+        if perf_mode is not None:
+            result["performance_mode"] = GLib.Variant("s", perf_mode)
+        else:
+            result["performance_mode"] = GLib.Variant("s", "Not Supported")
 
         # Throttle reasons bitmask (uint64)
         tr = stats.get("throttle_reasons")

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -75,6 +76,21 @@ class DriversPage(Adw.PreferencesPage):
         self._reboot_banner.set_revealed(True)
         self._reboot_banner.connect("button-clicked", self._on_reboot_banner_clicked)
         self._reboot_banner_group.add(self._reboot_banner)
+
+        # ── .run File Detection Banner (FR77) ──
+        self._run_file_banner_group = Adw.PreferencesGroup()
+        self._run_file_banner_group.set_visible(False)
+        self.add(self._run_file_banner_group)
+
+        self._run_file_banner = Adw.Banner()
+        self._run_file_banner.set_title(
+            _(
+                "NVIDIA driver installed via .run file — Verde cannot manage this installation. "
+                "Consider uninstalling the .run driver and using Ubuntu repository drivers instead."
+            )
+        )
+        self._run_file_banner.set_revealed(False)
+        self._run_file_banner_group.add(self._run_file_banner)
 
         # ── Current Driver ──
         self._current_driver_group = Adw.PreferencesGroup(title=_("Current Driver"))
@@ -274,8 +290,10 @@ class DriversPage(Adw.PreferencesPage):
     def _on_available_drivers_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
         try:
             reply = proxy.call_finish(result)
-            drivers = reply.unpack()[0]
-            GLib.idle_add(self._populate_available_drivers, drivers)
+            unpacked = reply.unpack()
+            drivers = unpacked[0]
+            metadata = unpacked[1] if len(unpacked) > 1 else {}
+            GLib.idle_add(self._populate_available_drivers, drivers, metadata)
         except GLib.Error as exc:
             log.warning("ListAvailableDrivers failed: %s", exc.message)
             GLib.idle_add(self._show_no_drivers_available)
@@ -337,7 +355,7 @@ class DriversPage(Adw.PreferencesPage):
         self._no_driver_status.set_visible(True)
         return GLib.SOURCE_REMOVE
 
-    def _populate_available_drivers(self, drivers: list) -> bool:
+    def _populate_available_drivers(self, drivers: list, metadata: dict | None = None) -> bool:
         """Populate Available Drivers group from D-Bus response."""
         self._available_drivers_spinner.set_visible(False)
         self._available_drivers_spinner.set_spinning(False)
@@ -346,6 +364,17 @@ class DriversPage(Adw.PreferencesPage):
         for row in self._driver_rows:
             self._available_drivers_group.remove(row)
         self._driver_rows.clear()
+
+        # Check for .run file installation (FR77)
+        metadata = metadata or {}
+        run_detected = metadata.get("run_file_detected", False)
+        run_message = metadata.get("run_file_message", "")
+
+        if run_detected:
+            self._show_run_file_banner(run_message)
+            return GLib.SOURCE_REMOVE
+
+        self._run_file_banner.set_revealed(False)
 
         if not drivers:
             self._show_no_drivers_available()
@@ -365,6 +394,19 @@ class DriversPage(Adw.PreferencesPage):
             self._driver_rows.append(row)
 
         return GLib.SOURCE_REMOVE
+
+    def _show_run_file_banner(self, message: str = "") -> None:
+        """Show .run file detection banner and disable driver management."""
+        self._run_file_banner_group.set_visible(True)
+        if message:
+            self._run_file_banner.set_title(message)
+        self._run_file_banner.set_revealed(True)
+        self._no_drivers_status.set_visible(False)
+
+    def _disable_driver_rows(self) -> None:
+        """Disable all driver install rows (e.g. when .run file detected)."""
+        for row in self._driver_rows:
+            row.set_sensitive(False)
 
     def _show_no_drivers_available(self) -> bool:
         self._available_drivers_spinner.set_visible(False)
@@ -606,7 +648,12 @@ class DriversPage(Adw.PreferencesPage):
             panel.set_success(message or _("Driver installed successfully"))
             dialog.set_heading(_("Installation Complete"))
         else:
-            safe_msg = _sanitize_dbus_error(message) if message else _("Installation failed")
+            # Try to parse structured error (BS-2: JSON in message field)
+            error_data = parse_structured_error(message)
+            if error_data:
+                safe_msg = format_error_message(error_data)
+            else:
+                safe_msg = _sanitize_dbus_error(message) if message else _("Installation failed")
             panel.set_error(safe_msg)
             dialog.set_heading(_("Installation Failed"))
             # Add error action buttons per AC7
@@ -676,3 +723,40 @@ def _sanitize_dbus_error(error_text: str) -> str:
         error_text = lines[-1] if lines else error_text
 
     return error_text
+
+
+def parse_structured_error(message: str) -> dict | None:
+    """Parse a JSON-encoded structured error dict from OperationComplete message.
+
+    Returns a dict with keys: error_title, error_description, error_primary_action,
+    error_secondary_action, error_category, recoverable.
+    Returns None if message is not valid JSON or not a structured error.
+    """
+    try:
+        data = json.loads(message)
+        if isinstance(data, dict) and "error_title" in data:
+            return data
+    except (json.JSONDecodeError, TypeError):
+        pass
+    return None
+
+
+def format_error_message(error_dict: dict) -> str:
+    """Format a structured error dict into UX-DR16 compliant display text.
+
+    Pattern: title + description + primary action + secondary action.
+    No raw exceptions, no error codes.
+    """
+    title = error_dict.get("error_title", _("An error occurred"))
+    description = error_dict.get("error_description", "")
+    primary = error_dict.get("error_primary_action", "")
+    secondary = error_dict.get("error_secondary_action", "")
+
+    parts = [title]
+    if description:
+        parts.append(description)
+    if primary:
+        parts.append(_("Suggested action: {}").format(primary))
+    if secondary:
+        parts.append(_("Alternative: {}").format(secondary))
+    return "\n\n".join(parts)

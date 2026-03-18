@@ -295,6 +295,27 @@ class NvmlWrapper:
         ret = self._call("nvmlDeviceGetPerformanceState", handle, ctypes.byref(pstate))
         return pstate.value if ret == NVML_SUCCESS else Unavailable
 
+    def get_performance_mode(self, handle: ctypes.c_void_p) -> str:
+        """Return a human-readable performance mode string based on P-state.
+
+        Maps NVML performance states (P0-P15) to user-friendly labels.
+        Returns "Not Supported" when the P-state cannot be queried.
+        """
+        pstate = self.get_performance_state(handle)
+        if pstate is Unavailable:
+            return "Not Supported"
+        if pstate < 0:
+            return "Not Supported"
+        if pstate <= 1:
+            return "Maximum Performance"
+        if pstate <= 4:
+            return "High Performance"
+        if pstate <= 8:
+            return "Adaptive"
+        if pstate <= 12:
+            return "Power Saving"
+        return "Minimum Power"
+
     def get_memory_info(self, handle: ctypes.c_void_p) -> dict[str, int] | _Unavailable:
         mem = NvmlMemory()
         ret = self._call("nvmlDeviceGetMemoryInfo", handle, ctypes.byref(mem))
@@ -505,6 +526,7 @@ class NvmlWrapper:
             "num_cores": self.get_num_gpu_cores(handle),
             "compute_capability": self.get_cuda_compute_capability(handle),
             "ecc_mode": self.get_ecc_mode(handle),
+            "performance_mode": self.get_performance_mode(handle),
         }
 
     def get_all_gpu_stats(self, index: int) -> dict:
@@ -527,6 +549,7 @@ class NvmlWrapper:
             "power_usage": self.get_power_usage(handle),
             "power_limit": self.get_power_limit(handle),
             "performance_state": self.get_performance_state(handle),
+            "performance_mode": self.get_performance_mode(handle),
             "throttle_reasons": throttle_raw,
             "throttle_reasons_decoded": throttle_decoded,
             "processes": self.get_running_processes(handle),

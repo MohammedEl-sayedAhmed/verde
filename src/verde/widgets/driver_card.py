@@ -29,17 +29,24 @@ def build_driver_row(
     version = driver.get("version", "")
     variant = driver.get("variant", "proprietary")
     recommended = driver.get("recommended", False)
+    held = driver.get("held", False)
 
     row = Adw.ActionRow()
     row.set_title(package)
-    row.set_subtitle(_("Version {} - {}").format(version, variant.capitalize()))
+
+    if held:
+        row.set_subtitle(
+            _("Package held — run `sudo apt-mark unhold {}` to allow updates").format(package)
+        )
+    else:
+        row.set_subtitle(_("Version {} - {}").format(version, variant.capitalize()))
     row.add_css_class("verde-technical")
 
     # Suffix box: optional recommended badge + install button
     suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
     suffix_box.set_valign(Gtk.Align.CENTER)
 
-    if recommended:
+    if recommended and not held:
         badge = Gtk.Label(label=_("Recommended"))
         badge.add_css_class("caption")
         badge.set_valign(Gtk.Align.CENTER)
@@ -49,7 +56,12 @@ def build_driver_row(
     install_btn = Gtk.Button(label=_("Install Driver {}").format(version_short))
     install_btn.set_valign(Gtk.Align.CENTER)
 
-    if recommended:
+    if held:
+        install_btn.set_sensitive(False)
+        install_btn.set_tooltip_text(
+            _("Package is held. Run `sudo apt-mark unhold {}` to enable updates.").format(package)
+        )
+    elif recommended:
         install_btn.add_css_class("suggested-action")
     else:
         install_btn.add_css_class("flat")
@@ -59,7 +71,7 @@ def build_driver_row(
         [_("Install Driver {}, {}").format(version_short, variant)],
     )
 
-    if on_install_clicked is not None:
+    if on_install_clicked is not None and not held:
         install_btn.connect("clicked", on_install_clicked, driver)
 
     suffix_box.append(install_btn)

@@ -87,13 +87,18 @@ def check_authorization(
         return False
 
     except GLib.Error as exc:
-        # Detect missing auth agent vs other Polkit failures
+        # Detect specific Polkit error conditions
         msg = exc.message if hasattr(exc, "message") else str(exc)
-        if "authentication agent" in msg.lower() or "no agent" in msg.lower():
+        msg_lower = msg.lower()
+        if "authentication agent" in msg_lower or "no agent" in msg_lower:
             raise PolkitAgentMissing(msg) from exc
+        if "cancelled" in msg_lower or "dismissed" in msg_lower:
+            raise PolkitCancelled(msg) from exc
+        if "timed out" in msg_lower or "timeout" in msg_lower:
+            raise PolkitTimeout(msg) from exc
         log.error("Polkit authorization check failed: %s", msg)
         return False
-    except PolkitAgentMissing:
+    except (PolkitAgentMissing, PolkitCancelled, PolkitTimeout):
         raise  # Re-raise so callers can distinguish
     except Exception:
         log.exception("Unexpected error during Polkit authorization check")
@@ -102,3 +107,11 @@ def check_authorization(
 
 class PolkitAgentMissing(Exception):
     """Raised when Polkit authentication agent is not available."""
+
+
+class PolkitCancelled(Exception):
+    """Raised when the user cancels Polkit authentication."""
+
+
+class PolkitTimeout(Exception):
+    """Raised when Polkit authentication times out."""

@@ -8,7 +8,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # verde_daemon package registration is handled by tests/conftest.py
-from polkit import METHOD_ACTION_MAP, PolkitAgentMissing, check_authorization
+from polkit import (
+    METHOD_ACTION_MAP,
+    PolkitAgentMissing,
+    PolkitCancelled,
+    PolkitTimeout,
+    check_authorization,
+)
 
 # ===================================================================
 # METHOD_ACTION_MAP completeness
@@ -230,3 +236,78 @@ class TestPolkitAgentMissing:
         exc = PolkitAgentMissing("test message")
         assert isinstance(exc, Exception)
         assert str(exc) == "test message"
+
+
+# ===================================================================
+# PolkitCancelled / PolkitTimeout detection (Story 2.6, AC #2)
+# ===================================================================
+
+
+class TestPolkitCancelled:
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_cancelled_message(self, mock_proxy_class):
+        """GLib.Error with 'cancelled' raises PolkitCancelled."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"),
+            "GDBus.Error:org.freedesktop.PolicyKit1.Error.Cancelled: Authentication was cancelled",
+            0,
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitCancelled):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_dismissed_message(self, mock_proxy_class):
+        """GLib.Error with 'dismissed' raises PolkitCancelled."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "User dismissed the authentication dialog", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitCancelled):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    def test_polkit_cancelled_is_exception(self):
+        exc = PolkitCancelled("cancelled")
+        assert isinstance(exc, Exception)
+
+
+class TestPolkitTimeout:
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_timeout_message(self, mock_proxy_class):
+        """GLib.Error with 'timed out' raises PolkitTimeout."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "Authentication timed out", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitTimeout):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    @patch("polkit.Gio.DBusProxy")
+    def test_raises_on_timeout_keyword(self, mock_proxy_class):
+        """GLib.Error with 'timeout' raises PolkitTimeout."""
+        from gi.repository import GLib
+
+        error = GLib.Error.new_literal(
+            GLib.quark_from_string("g-io-error"), "Polkit check timeout expired", 0
+        )
+        mock_proxy_class.new_for_bus_sync.side_effect = error
+
+        conn = MagicMock()
+        with pytest.raises(PolkitTimeout):
+            check_authorization(conn, ":1.42", "com.verde.driver.manage")
+
+    def test_polkit_timeout_is_exception(self):
+        exc = PolkitTimeout("timeout")
+        assert isinstance(exc, Exception)
