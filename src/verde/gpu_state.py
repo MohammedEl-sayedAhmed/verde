@@ -118,10 +118,15 @@ class GPUState(GObject.Object):
     def __init__(self, **kwargs: object) -> None:
         super().__init__(**kwargs)
         self._processes: list[dict] = []
+        self._devices: list[dict] = []
 
     def get_processes(self) -> list[dict]:
         """Return the current process list (read-only copy)."""
         return list(self._processes)
+
+    def get_devices(self) -> list[dict]:
+        """Return the device list (read-only copy)."""
+        return list(self._devices)
 
     def update_from_dict(self, data: dict) -> None:
         """Update properties from a D-Bus ``a{sv}`` dict. Thread-safe.
@@ -190,6 +195,12 @@ class GPUState(GObject.Object):
         if "ecc_mode" in data:
             self._set_if_changed("ecc-mode", bool(data["ecc_mode"]))
 
+        # Device list — stored as plain Python list for multi-GPU notice
+        if "devices" in data:
+            devs = data["devices"]
+            if isinstance(devs, list):
+                self._devices = devs
+
         # Process list — stored as plain Python list, notify via process-count
         if "processes" in data:
             procs = data["processes"]
@@ -208,4 +219,5 @@ class GPUState(GObject.Object):
         for prop_name, default in _STAT_DEFAULTS.items():
             self.set_property(prop_name, default)
         self._processes = []
+        self._devices = []
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]

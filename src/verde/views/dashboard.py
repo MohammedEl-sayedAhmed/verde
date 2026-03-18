@@ -404,8 +404,8 @@ else:
 
         def _on_power_changed(self) -> None:
             gs = self._gpu_state
-            draw = gs.get_property("power-draw")
-            limit = gs.get_property("power-limit")
+            draw = gs.get_property("power-draw") / 1000  # mW → W
+            limit = gs.get_property("power-limit") / 1000  # mW → W
             self._power_row.set_subtitle(f"{draw:.0f}W")
 
             pct = (draw / limit * 100) if limit > 0 else 0.0
@@ -452,8 +452,8 @@ else:
             bus_id = gs.get_property("pci-bus-id")
             self._pcie_bus_id_row.set_subtitle(bus_id if bus_id else "Unavailable")
 
-            # Power limit
-            plimit = gs.get_property("power-limit")
+            # Power limit (mW → W)
+            plimit = gs.get_property("power-limit") / 1000
             self._power_limit_row.set_subtitle(f"{plimit:.0f}W" if plimit > 0 else "Unavailable")
 
             # Driver CUDA version
@@ -498,9 +498,20 @@ else:
         def _on_device_count_changed(self) -> None:
             count = self._gpu_state.get_property("device-count")
             if count > 1:
-                extra = count - 1
-                label = "GPU" if extra == 1 else "GPUs"
-                self._multi_gpu_row.set_subtitle(f"{extra} additional {label} detected")
+                devices = self._gpu_state.get_devices()
+                # Skip index 0 (primary GPU) — list additional GPUs by name and bus ID
+                extras = [d for d in devices if d.get("index", 0) != 0]
+                parts = []
+                for d in extras:
+                    name = d.get("name", "Unknown GPU")
+                    bus_id = d.get("bus_id", "")
+                    parts.append(f"{name} ({bus_id})" if bus_id else name)
+                if parts:
+                    self._multi_gpu_row.set_subtitle(", ".join(parts))
+                else:
+                    extra = count - 1
+                    label = "GPU" if extra == 1 else "GPUs"
+                    self._multi_gpu_row.set_subtitle(f"{extra} additional {label} detected")
                 self._multi_gpu_row.set_visible(True)
             else:
                 self._multi_gpu_row.set_visible(False)
@@ -508,6 +519,14 @@ else:
         def _on_processes_changed(self) -> None:
             gs = self._gpu_state
             procs = gs.get_processes()
+
+            # Skip rebuild if the PID set hasn't changed
+            new_pids = tuple(
+                (p.get("pid"), p.get("used_gpu_memory", 0), p.get("sm_util")) for p in procs
+            )
+            if hasattr(self, "_last_proc_snapshot") and self._last_proc_snapshot == new_pids:
+                return
+            self._last_proc_snapshot = new_pids
 
             # Remove old process rows
             for row in self._process_rows:

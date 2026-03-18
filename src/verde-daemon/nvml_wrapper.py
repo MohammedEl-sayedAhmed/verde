@@ -90,7 +90,7 @@ NVML_MEMORY_LOCATION_DEVICE = 0
 
 THROTTLE_REASON_MAP: dict[int, str] = {
     NVML_THROTTLE_REASON_SW_POWER_CAP: "Software power cap",
-    NVML_THROTTLE_REASON_HW_SLOWDOWN: "Hardware slowdown",
+    NVML_THROTTLE_REASON_HW_SLOWDOWN: "Hardware slowdown (thermal/power)",
     NVML_THROTTLE_REASON_SYNC_BOOST: "Sync boost",
     NVML_THROTTLE_REASON_SW_THERMAL: "Software thermal limit",
     NVML_THROTTLE_REASON_HW_THERMAL: "Hardware thermal limit",
@@ -556,8 +556,8 @@ class NvmlWrapper:
                 return Unavailable
         except FileNotFoundError:
             pass
-        except (subprocess.TimeoutExpired, OSError):
-            return Unavailable
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.warning("prime-select query failed: %s", exc)
 
         # Fallback: check sysfs switchable GPU presence
         import os
@@ -587,6 +587,6 @@ class NvmlWrapper:
                     return match.group(1)
         except FileNotFoundError:
             pass
-        except (subprocess.TimeoutExpired, OSError):
-            pass
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            log.warning("nvcc --version failed: %s", exc)
         return Unavailable

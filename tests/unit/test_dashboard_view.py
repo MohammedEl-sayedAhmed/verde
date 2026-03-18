@@ -147,7 +147,7 @@ class TestDashboardBinding:
         assert dashboard._vram_row.get_subtitle() == "8.0 / 24.0 GB"
 
     def test_power_subtitle_format(self, dashboard, gpu_state):
-        gpu_state.set_property("power-draw", 185.0)
+        gpu_state.set_property("power-draw", 185000.0)  # milliwatts from NVML
         assert dashboard._power_row.get_subtitle() == "185W"
 
     def test_gpu_name_row_title(self, dashboard, gpu_state):
@@ -362,7 +362,7 @@ class TestAdvancedDetailsExpander:
         assert dashboard._compute_cap_row.get_subtitle() == "Unavailable"
 
     def test_power_limit_row(self, dashboard, gpu_state):
-        gpu_state.set_property("power-limit", 450.0)
+        gpu_state.set_property("power-limit", 450000.0)  # milliwatts from NVML
         assert dashboard._power_limit_row.get_subtitle() == "450W"
 
     def test_power_limit_unavailable(self, dashboard, gpu_state):
@@ -423,7 +423,7 @@ class TestAdvancedDetailsExpander:
         assert dashboard._throttle_row.get_subtitle() == "Software power cap"
 
     def test_throttle_hidden_when_cleared(self, dashboard, gpu_state):
-        gpu_state.set_property("throttle-reasons", "Hardware slowdown")
+        gpu_state.set_property("throttle-reasons", "Hardware slowdown (thermal/power)")
         assert dashboard._throttle_row.get_visible() is True
         gpu_state.set_property("throttle-reasons", "")
         assert dashboard._throttle_row.get_visible() is False
@@ -440,6 +440,16 @@ class TestAdvancedDetailsExpander:
     def test_multi_gpu_singular(self, dashboard, gpu_state):
         gpu_state.set_property("device-count", 2)
         assert "1 additional GPU detected" in dashboard._multi_gpu_row.get_subtitle()
+
+    def test_multi_gpu_shows_device_names(self, dashboard, gpu_state):
+        gpu_state._devices = [
+            {"index": 0, "name": "RTX 4090", "bus_id": "0000:01:00.0"},
+            {"index": 1, "name": "RTX 4080", "bus_id": "0000:02:00.0"},
+        ]
+        gpu_state.set_property("device-count", 2)
+        subtitle = dashboard._multi_gpu_row.get_subtitle()
+        assert "RTX 4080" in subtitle
+        assert "0000:02:00.0" in subtitle
 
     def test_multi_gpu_hidden_when_zero(self, dashboard, gpu_state):
         gpu_state.set_property("device-count", 0)

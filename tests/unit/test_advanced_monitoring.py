@@ -101,7 +101,7 @@ class TestDecodeThrottleReasons:
 
     def test_single_bit_hw_slowdown(self):
         result = decode_throttle_reasons(NVML_THROTTLE_REASON_HW_SLOWDOWN)
-        assert result == ["Hardware slowdown"]
+        assert result == ["Hardware slowdown (thermal/power)"]
 
     def test_multi_bit_mask(self):
         mask = NVML_THROTTLE_REASON_SW_THERMAL | NVML_THROTTLE_REASON_HW_THERMAL
@@ -325,11 +325,23 @@ class TestGetGpuMode:
             mock_run.return_value = MagicMock(returncode=1, stdout="")
             assert NvmlWrapper.get_gpu_mode() is Unavailable
 
-    def test_prime_select_timeout(self):
+    def test_prime_select_timeout_falls_through_to_sysfs(self):
         import subprocess
 
-        with patch("nvml_wrapper.subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
+        with (
+            patch("nvml_wrapper.subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)),
+            patch("os.path.exists", return_value=False),
+        ):
             assert NvmlWrapper.get_gpu_mode() is Unavailable
+
+    def test_prime_select_timeout_sysfs_fallback(self):
+        import subprocess
+
+        with (
+            patch("nvml_wrapper.subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)),
+            patch("os.path.exists", return_value=True),
+        ):
+            assert NvmlWrapper.get_gpu_mode() == "hybrid"
 
 
 # ===================================================================
