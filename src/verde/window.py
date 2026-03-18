@@ -164,6 +164,7 @@ class VerdeApplication(Adw.Application):
     def __init__(self, application_id: str, version: str, **kwargs):
         super().__init__(application_id=application_id, **kwargs)
         self._version = version
+        self._gpu_lost_dialog_shown = False
         self.gpu_state = GPUState()
         self.dbus_client = VerdeDBusClient(gpu_state=self.gpu_state)
         self.connect("activate", self._on_activate)
@@ -180,8 +181,22 @@ class VerdeApplication(Adw.Application):
             dashboard = win.view_stack.get_child_by_name("dashboard")
             if hasattr(dashboard, "bind_state"):
                 dashboard.bind_state(self.gpu_state)
+            self.gpu_state.connect("notify::degraded-state", self._on_degraded_state, win)
         win.present()
         self.dbus_client.connect_async()
+
+    def _on_degraded_state(self, gpu_state: GPUState, _pspec, win: Adw.ApplicationWindow) -> None:
+        """Show GPU-lost dialog when degraded state transitions to gpu_lost."""
+        if gpu_state.get_property("degraded-state") == "gpu_lost":
+            if self._gpu_lost_dialog_shown:
+                return
+            self._gpu_lost_dialog_shown = True
+            dashboard = win.view_stack.get_child_by_name("dashboard")
+            if hasattr(dashboard, "show_gpu_lost_dialog"):
+                dashboard.show_gpu_lost_dialog(win)
+        else:
+            # Reset guard when leaving gpu_lost state
+            self._gpu_lost_dialog_shown = False
 
     def do_shutdown(self):
         """Clean up D-Bus connection on application shutdown."""

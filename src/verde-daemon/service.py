@@ -10,6 +10,12 @@ from gi.repository import Gio, GLib
 
 from verde_daemon import __version__
 from verde_daemon.audit import AuditLogger
+from verde_daemon.degraded_states import (
+    DegradedState,
+    build_state_info,
+    detect_degraded_state,
+    detect_driver_type,
+)
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.polkit import METHOD_ACTION_MAP, check_authorization
 from verde_daemon.validators import (
@@ -35,7 +41,9 @@ _METHOD_VALIDATORS: dict[str, list[tuple[int, object]]] = {
 }
 
 # Methods that return a{sv} GPU data — dispatched after Polkit auth.
-_GPU_DATA_METHODS = frozenset({"GetGPUInfo", "GetGPUStats", "GetCurrentDriver"})
+_GPU_DATA_METHODS = frozenset(
+    {"GetGPUInfo", "GetGPUStats", "GetCurrentDriver", "GetDegradedState"}
+)
 
 
 class VerdeService:
@@ -85,6 +93,9 @@ class VerdeService:
             self._last_gpu_available = self._nvml_available
         except Exception:
             log.warning("NVML initialization failed — running in degraded mode")
+
+        # Degraded state tracking — re-detected each poll cycle
+        self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
 
         # Load introspection XML
         if introspection_xml is not None:
@@ -153,6 +164,7 @@ class VerdeService:
         if self._nvml is None:
             return GLib.SOURCE_CONTINUE
 
+        stats: dict[str, GLib.Variant] = {}
         try:
             stats = self._build_gpu_stats()
 
@@ -178,10 +190,39 @@ class VerdeService:
                     "GPUStatsUpdated",
                     GLib.Variant.new_tuple(GLib.Variant("a{sv}", stats)),
                 )
+
+            # Re-detect degraded state each cycle; emit signal on change
+            new_state = detect_degraded_state(self._nvml)
+            # GPU-lost override: if GPU was available and now stats say lost
+            if stats.get("gpu_lost") and stats["gpu_lost"].get_boolean():
+                new_state = DegradedState.GPU_LOST
+            if new_state != self._current_degraded_state:
+                old = self._current_degraded_state
+                self._current_degraded_state = new_state
+                log.warning(
+                    "Degraded state changed: %s -> %s",
+                    old.value,
+                    new_state.value,
+                )
+                self._emit_degraded_state_changed()
+
             self._on_idle_reset()
         except Exception:
             log.exception("Error during GPU stats polling")
         return GLib.SOURCE_CONTINUE
+
+    def _emit_degraded_state_changed(self) -> None:
+        """Emit DegradedStateChanged D-Bus signal."""
+        if self._connection is None:
+            return
+        info = self._build_degraded_state_response()
+        self._connection.emit_signal(
+            None,
+            OBJECT_PATH,
+            INTERFACE_NAME,
+            "DegradedStateChanged",
+            GLib.Variant.new_tuple(GLib.Variant("a{sv}", info)),
+        )
 
     # ------------------------------------------------------------------
     # Bus lifecycle callbacks
@@ -296,6 +337,8 @@ class VerdeService:
                 result = self._build_gpu_stats()
             elif method_name == "GetCurrentDriver":
                 result = self._build_current_driver()
+            elif method_name == "GetDegradedState":
+                result = self._build_degraded_state_response()
             else:
                 invocation.return_dbus_error(
                     "org.freedesktop.DBus.Error.UnknownMethod",
@@ -454,6 +497,20 @@ class VerdeService:
             result["driver_version_available"] = GLib.Variant("b", False)
 
         return result
+
+    def _build_degraded_state_response(self) -> dict[str, GLib.Variant]:
+        """Build GetDegradedState response from current state."""
+        dc = self._nvml.device_count() if self._nvml_available else 0
+        if dc is Unavailable:
+            dc = 0
+        driver = detect_driver_type()
+        info = build_state_info(self._current_degraded_state, driver, int(dc))
+        return {
+            "state": GLib.Variant("s", info["state"]),
+            "driver_type": GLib.Variant("s", info["driver_type"]),
+            "device_count": GLib.Variant("i", info["device_count"]),
+            "message": GLib.Variant("s", info["message"]),
+        }
 
     @staticmethod
     def _unavailable_response(reason: str) -> dict[str, GLib.Variant]:

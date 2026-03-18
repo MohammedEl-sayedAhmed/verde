@@ -12,6 +12,7 @@ configure_file(
 daemon_sources = [
   '__init__.py',
   'audit.py',
+  'degraded_states.py',
   'nvml_wrapper.py',
   'polkit.py',
   'service.py',

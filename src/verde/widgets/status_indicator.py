@@ -77,3 +77,7 @@ class StatusIndicator(Gtk.Label):
 
         level_labels = {"good": "Safe", "warn": "Warning", "crit": "Critical"}
         self.set_status(level_labels[level], level)
+
+    def set_unavailable(self) -> None:
+        """Show neutral/grey "Unavailable" state."""
+        self.set_status("Unavailable", "unknown")

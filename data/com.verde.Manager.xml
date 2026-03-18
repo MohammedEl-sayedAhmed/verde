@@ -52,7 +52,15 @@
       <arg name="op_id" type="s" direction="out"/>
     </method>
 
+    <!-- Story 1.10: Degraded state detection -->
+    <method name="GetDegradedState">
+      <arg name="state_info" type="a{sv}" direction="out"/>
+    </method>
+
     <!-- Signals -->
+    <signal name="DegradedStateChanged">
+      <arg name="state_info" type="a{sv}"/>
+    </signal>
     <signal name="OperationProgress">
       <arg name="op_id" type="s"/>
       <arg name="percent" type="d"/>

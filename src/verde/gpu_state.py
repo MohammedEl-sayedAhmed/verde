@@ -22,6 +22,7 @@ _KEY_MAP: dict[str, str] = {
     "name": "gpu-name",
     "driver_version": "driver-version",
     "driver_type": "driver-type",
+    "state": "degraded-state",
 }
 
 # Default values for reset() — only stats properties, not connection state.
@@ -29,6 +30,7 @@ _STAT_DEFAULTS: dict[str, object] = {
     "gpu-name": "",
     "driver-version": "",
     "driver-type": "unknown",
+    "degraded-state": "unknown",
     "temperature": 0,
     "utilization": 0,
     "memory-used": 0.0,
@@ -60,6 +62,7 @@ class GPUState(GObject.Object):
     gpu_name = GObject.Property(type=str, default="", nick="gpu-name")
     driver_version = GObject.Property(type=str, default="", nick="driver-version")
     driver_type = GObject.Property(type=str, default="unknown", nick="driver-type")
+    degraded_state = GObject.Property(type=str, default="unknown", nick="degraded-state")
     p_state = GObject.Property(type=str, default="", nick="p-state")
     reboot_reason = GObject.Property(type=str, default="", nick="reboot-reason")
 

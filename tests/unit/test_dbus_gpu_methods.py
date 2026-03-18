@@ -431,10 +431,27 @@ class TestPolling:
         service._nvml_available = False
         service._poll_and_emit()
 
-        # Second signal should have gpu_lost
-        payload = mock_connection.emit_signal.call_args[0][4]
+        # Find the GPUStatsUpdated signal (may not be the last emit due to DegradedStateChanged)
+        gpu_stats_call = None
+        degraded_call = None
+        for call in mock_connection.emit_signal.call_args_list:
+            signal_name = call[0][3]
+            if signal_name == "GPUStatsUpdated":
+                gpu_stats_call = call
+            elif signal_name == "DegradedStateChanged":
+                degraded_call = call
+
+        # GPUStatsUpdated should contain gpu_lost flag
+        assert gpu_stats_call is not None
+        payload = gpu_stats_call[0][4]
         stats = payload.get_child_value(0).unpack()
         assert stats["gpu_lost"] is True
+
+        # DegradedStateChanged should also be emitted with gpu_lost state
+        assert degraded_call is not None
+        degraded_payload = degraded_call[0][4]
+        degraded_info = degraded_payload.get_child_value(0).unpack()
+        assert degraded_info["state"] == "gpu_lost"
 
     @patch("service.GLib.timeout_add_seconds", return_value=999)
     def test_poll_handles_nvml_unavailable(self, mock_timeout, service_degraded, mock_connection):

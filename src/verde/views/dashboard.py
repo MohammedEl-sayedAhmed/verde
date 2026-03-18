@@ -72,6 +72,69 @@ def compute_health_status(gpu_state: GPUState) -> str:
     return "good"
 
 
+# ── Degraded state display map ────────────────────────────────────────
+
+_DEGRADED_STATES: dict[str, dict[str, str | None]] = {
+    "no_gpu": {
+        "title": "No NVIDIA GPU Detected",
+        "description": (
+            "Verde couldn\u2019t find an NVIDIA GPU on this system. "
+            "This could mean no NVIDIA card is installed, "
+            "or the GPU is not recognized by the system."
+        ),
+        "icon": "computer-fail-symbolic",
+        "action": None,
+    },
+    "nouveau_active": {
+        "title": "Open-Source Driver Active",
+        "description": (
+            "Your NVIDIA GPU is using the open-source nouveau driver, "
+            "which provides basic display but no monitoring or advanced "
+            "features. Install a proprietary driver for full functionality."
+        ),
+        "icon": "dialog-information-symbolic",
+        "action": "View Drivers",
+    },
+    "no_driver": {
+        "title": "No Driver Installed",
+        "description": ("Your NVIDIA GPU needs a driver for full performance and monitoring."),
+        "icon": "system-software-install-symbolic",
+        "action": "Install Driver",
+    },
+    "daemon_unreachable": {
+        "title": "System Service Unavailable",
+        "description": (
+            "Verde\u2019s system service is not responding. "
+            "Try restarting the service with: "
+            "systemctl restart com.verde.Manager"
+        ),
+        "icon": "network-error-symbolic",
+        "action": None,
+    },
+    "gpu_lost": {
+        "title": "GPU Connection Lost",
+        "description": (
+            "Your NVIDIA GPU is no longer responding. This typically "
+            "indicates a hardware issue. Try rebooting the system. "
+            "If the problem persists, the GPU may need to be "
+            "physically reseated."
+        ),
+        "icon": "dialog-warning-symbolic",
+        "action": None,
+    },
+    "nvml_unavailable": {
+        "title": "GPU Management Unavailable",
+        "description": (
+            "The NVIDIA management library could not be loaded. "
+            "This usually means the NVIDIA driver is not installed "
+            "or not properly configured."
+        ),
+        "icon": "dialog-warning-symbolic",
+        "action": "View Drivers",
+    },
+}
+
+
 # ── Helper ───────────────────────────────────────────────────────────
 
 
@@ -109,6 +172,9 @@ else:
         def bind_state(self, gpu_state: GPUState) -> None:
             """Build dashboard UI and bind to GPUState properties."""
             self._gpu_state = gpu_state
+            self._degraded_group: Adw.PreferencesGroup | None = None
+            self._monitoring_groups: list[Adw.PreferencesGroup] = []
+            self._current_view = "monitoring"
             self._build_ui()
             self._connect_signals()
             # Initial update from current state
@@ -118,11 +184,14 @@ else:
             self._on_memory_changed()
             self._on_power_changed()
             self._update_health()
+            # Check initial degraded state
+            self._on_degraded_state_changed()
 
         def _build_ui(self) -> None:
             # ── GPU Identity group ──
             self._gpu_group = Adw.PreferencesGroup(title="GPU")
             self.add(self._gpu_group)
+            self._monitoring_groups.append(self._gpu_group)
 
             self._gpu_name_row = Adw.ActionRow(title="GPU")
             self._gpu_group.add(self._gpu_name_row)
@@ -133,6 +202,7 @@ else:
             # ── System Health group ──
             self._health_group = Adw.PreferencesGroup(title="System Health")
             self.add(self._health_group)
+            self._monitoring_groups.append(self._health_group)
 
             self._health_indicator = StatusIndicator()
             self._health_icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
@@ -144,6 +214,7 @@ else:
             # ── Live Statistics group ──
             self._stats_group = Adw.PreferencesGroup(title="Live Statistics")
             self.add(self._stats_group)
+            self._monitoring_groups.append(self._stats_group)
 
             # Temperature
             self._temp_indicator = StatusIndicator()
@@ -186,6 +257,8 @@ else:
             gs.connect("notify::memory-total", lambda *_: self._on_memory_changed())
             gs.connect("notify::power-draw", lambda *_: self._on_power_changed())
             gs.connect("notify::power-limit", lambda *_: self._on_power_changed())
+            gs.connect("notify::gpu-available", lambda *_: self._on_gpu_available_changed())
+            gs.connect("notify::degraded-state", lambda *_: self._on_degraded_state_changed())
 
         # ── Property change handlers ─────────────────────────────────
 
@@ -275,6 +348,103 @@ else:
                 [Gtk.AccessibleProperty.DESCRIPTION],
                 [f"System Health: {labels[health]}"],
             )
+
+        def _on_gpu_available_changed(self) -> None:
+            if not self._gpu_state.get_property("gpu-available"):
+                self._set_stats_unavailable()
+
+        def _set_stats_unavailable(self) -> None:
+            """Set all stat rows to Unavailable display."""
+            self._temp_row.set_subtitle("Unavailable")
+            self._temp_indicator.set_unavailable()
+            self._util_row.set_subtitle("Unavailable")
+            self._util_indicator.set_unavailable()
+            self._vram_row.set_subtitle("Unavailable")
+            self._vram_indicator.set_unavailable()
+            self._power_row.set_subtitle("Unavailable")
+            self._power_indicator.set_unavailable()
+            self._health_indicator.set_status("Unavailable", "unknown")
+            self._health_icon.set_from_icon_name("content-loading-symbolic")
+
+        # ── Degraded state switching ─────────────────────────────────
+
+        def _on_degraded_state_changed(self) -> None:
+            state = self._gpu_state.get_property("degraded-state")
+            if state in ("normal", "unknown", "") or state not in _DEGRADED_STATES:
+                self._show_monitoring_view()
+            else:
+                self._show_degraded_view(state)
+
+        def _show_monitoring_view(self) -> None:
+            if self._current_view == "monitoring":
+                return
+            # Remove degraded group
+            if self._degraded_group is not None:
+                self.remove(self._degraded_group)
+                self._degraded_group = None
+            # Re-add monitoring groups
+            for group in self._monitoring_groups:
+                self.add(group)
+            self._current_view = "monitoring"
+
+        def _show_degraded_view(self, state: str) -> None:
+            info = _DEGRADED_STATES.get(state)
+            if info is None:
+                return
+
+            # Remove monitoring groups
+            if self._current_view == "monitoring":
+                for group in self._monitoring_groups:
+                    self.remove(group)
+
+            # Remove old degraded group if switching between degraded states
+            if self._degraded_group is not None:
+                self.remove(self._degraded_group)
+
+            # Build degraded status display
+            self._degraded_group = Adw.PreferencesGroup()
+
+            status_page = Adw.StatusPage()
+            status_page.set_icon_name(info["icon"])
+            status_page.set_title(info["title"])
+            status_page.set_description(info["description"])
+
+            if info.get("action"):
+                btn = Gtk.Button(label=info["action"])
+                btn.add_css_class("suggested-action")
+                btn.add_css_class("pill")
+                btn.set_halign(Gtk.Align.CENTER)
+                btn.connect("clicked", self._on_degraded_action_clicked)
+                status_page.set_child(btn)
+
+            self._degraded_group.add(status_page)
+            self.add(self._degraded_group)
+            self._current_view = "degraded"
+
+        def _on_degraded_action_clicked(self, _btn: Gtk.Button) -> None:
+            """Navigate to Drivers page when action button is clicked."""
+            page = self.get_parent()
+            while page is not None and not isinstance(page, Adw.ViewStack):
+                page = page.get_parent()
+            if isinstance(page, Adw.ViewStack):
+                page.set_visible_child_name("drivers")
+
+        def show_gpu_lost_dialog(self, window: Gtk.Window) -> None:
+            """Show a modal dialog when GPU is lost at runtime."""
+            dialog = Adw.MessageDialog.new(
+                window,
+                "GPU Connection Lost",
+            )
+            dialog.set_body(
+                "Your NVIDIA GPU is no longer responding. This typically "
+                "indicates a hardware issue. Try rebooting the system. "
+                "If the problem persists, the GPU may need to be "
+                "physically reseated."
+            )
+            dialog.add_response("ok", "OK")
+            dialog.set_default_response("ok")
+            dialog.set_close_response("ok")
+            dialog.present()
 
 
 def _level_text(value: float, warn: float, crit: float) -> str:

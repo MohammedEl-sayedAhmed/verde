@@ -84,9 +84,11 @@ class VerdeDBusClient(GObject.Object):
         if self._proxy.get_name_owner() is None:
             log.info("Daemon not running — waiting for it to appear")
             self.set_property("connected", False)
+            self._gpu_state._set_if_changed("degraded-state", "daemon_unreachable")
         else:
             self.set_property("connected", True)
             self.get_gpu_info()
+            self.get_degraded_state()
 
         self._proxy_handler_ids = [
             self._proxy.connect("g-signal", self._on_dbus_signal),
@@ -100,10 +102,12 @@ class VerdeDBusClient(GObject.Object):
             log.info("Daemon appeared on bus")
             self.set_property("connected", True)
             self.get_gpu_info()
+            self.get_degraded_state()
         else:
             log.warning("Daemon disappeared from bus")
             self.set_property("connected", False)
             self._gpu_state.reset()
+            self._gpu_state._set_if_changed("degraded-state", "daemon_unreachable")
 
     def _schedule_retry(self) -> None:
         """Schedule a reconnection attempt."""
@@ -142,7 +146,7 @@ class VerdeDBusClient(GObject.Object):
         parameters: GLib.Variant,
     ) -> None:
         """Route D-Bus signals to appropriate handlers."""
-        if signal_name == "GPUStatsUpdated":
+        if signal_name == "GPUStatsUpdated" or signal_name == "DegradedStateChanged":
             data = parameters.unpack()[0]
             self._gpu_state.update_from_dict(data)
         elif signal_name == "RebootRequired":
@@ -198,6 +202,19 @@ class VerdeDBusClient(GObject.Object):
             proxy.call_finish(result)
         except GLib.Error as exc:
             log.warning("D-Bus method call failed: %s", exc.message)
+
+    def get_degraded_state(self) -> None:
+        """Fetch current degraded state from daemon."""
+        self.call_method_async("GetDegradedState", None, self._on_degraded_state_reply)
+
+    def _on_degraded_state_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
+        try:
+            reply = proxy.call_finish(result)
+            data = reply.unpack()[0]
+            self._gpu_state.update_from_dict(data)
+        except GLib.Error as exc:
+            log.warning("GetDegradedState failed: %s", exc.message)
+            self._gpu_state._set_if_changed("degraded-state", "daemon_unreachable")
 
     def get_gpu_info(self) -> None:
         """Fetch static GPU info and update the state model."""

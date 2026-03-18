@@ -216,3 +216,112 @@ class TestDashboardBinding:
     def test_temp_indicator_css_crit(self, dashboard, gpu_state):
         gpu_state.set_property("temperature", TEMP_CRIT)
         assert dashboard._temp_indicator.has_css_class("verde-status-crit")
+
+
+# ===================================================================
+# Degraded state display (Story 1.10)
+# ===================================================================
+
+
+class TestDegradedStateDisplay:
+    @pytest.fixture
+    def dashboard(self, gpu_state):
+        page = DashboardPage()
+        page.bind_state(gpu_state)
+        return page
+
+    def test_initial_view_is_monitoring(self, dashboard):
+        assert dashboard._current_view == "monitoring"
+
+    def test_degraded_state_switches_to_degraded_view(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "no_gpu")
+        assert dashboard._current_view == "degraded"
+        assert dashboard._degraded_group is not None
+
+    def test_normal_state_restores_monitoring_view(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "no_gpu")
+        assert dashboard._current_view == "degraded"
+        gpu_state.set_property("degraded-state", "normal")
+        assert dashboard._current_view == "monitoring"
+        assert dashboard._degraded_group is None
+
+    def test_all_degraded_states_display(self, dashboard, gpu_state):
+        for state in (
+            "no_gpu",
+            "nouveau_active",
+            "no_driver",
+            "daemon_unreachable",
+            "gpu_lost",
+            "nvml_unavailable",
+        ):
+            gpu_state.set_property("degraded-state", state)
+            assert dashboard._current_view == "degraded"
+
+    def test_unknown_degraded_state_shows_monitoring(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "unknown")
+        assert dashboard._current_view == "monitoring"
+
+    def test_empty_degraded_state_shows_monitoring(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "no_gpu")
+        gpu_state.set_property("degraded-state", "")
+        assert dashboard._current_view == "monitoring"
+
+    def test_switching_between_degraded_states(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "no_gpu")
+        first_group = dashboard._degraded_group
+        gpu_state.set_property("degraded-state", "no_driver")
+        assert dashboard._current_view == "degraded"
+        # Group should be replaced
+        assert dashboard._degraded_group is not first_group
+
+    def test_unrecognized_degraded_state_falls_back_to_monitoring(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "some_future_state")
+        # Unknown states fall back to monitoring view (P-4 fix)
+        assert dashboard._current_view == "monitoring"
+
+    def test_unrecognized_state_after_degraded_restores_monitoring(self, dashboard, gpu_state):
+        gpu_state.set_property("degraded-state", "no_gpu")
+        assert dashboard._current_view == "degraded"
+        gpu_state.set_property("degraded-state", "some_future_state")
+        assert dashboard._current_view == "monitoring"
+        assert dashboard._degraded_group is None
+
+
+# ===================================================================
+# Unavailable state display (Story 1.10)
+# ===================================================================
+
+
+class TestUnavailableDisplay:
+    @pytest.fixture
+    def dashboard(self, gpu_state):
+        page = DashboardPage()
+        page.bind_state(gpu_state)
+        return page
+
+    def test_gpu_unavailable_sets_stats_unavailable(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-available", False)
+        assert dashboard._temp_row.get_subtitle() == "Unavailable"
+        assert dashboard._util_row.get_subtitle() == "Unavailable"
+        assert dashboard._vram_row.get_subtitle() == "Unavailable"
+        assert dashboard._power_row.get_subtitle() == "Unavailable"
+
+    def test_gpu_unavailable_health_indicator(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-available", False)
+        assert dashboard._health_indicator.get_label() == "Unavailable"
+        assert dashboard._health_icon.get_icon_name() == "content-loading-symbolic"
+
+    def test_gpu_unavailable_stat_indicators(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-available", False)
+        assert dashboard._temp_indicator.get_label() == "Unavailable"
+        assert dashboard._util_indicator.get_label() == "Unavailable"
+        assert dashboard._vram_indicator.get_label() == "Unavailable"
+        assert dashboard._power_indicator.get_label() == "Unavailable"
+
+    def test_gpu_available_after_unavailable_recovers(self, dashboard, gpu_state):
+        gpu_state.set_property("gpu-available", False)
+        assert dashboard._temp_row.get_subtitle() == "Unavailable"
+        # Simulate recovery: new data arrives
+        gpu_state.set_property("gpu-available", True)
+        gpu_state.set_property("temperature", 55)
+        assert dashboard._temp_row.get_subtitle() == "55°C"
