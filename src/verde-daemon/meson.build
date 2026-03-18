@@ -19,6 +19,7 @@ daemon_sources = [
   'polkit.py',
   'preflight.py',
   'service.py',
+  'snapshot_manager.py',
   'validators.py',
 ]
 

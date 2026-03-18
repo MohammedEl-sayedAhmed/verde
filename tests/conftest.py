@@ -38,6 +38,7 @@ for _name in (
     "driver_manager",
     "preflight",
     "apt_errors",
+    "snapshot_manager",
 ):
     _mod_path = DAEMON_SRC / f"{_name}.py"
     if _mod_path.exists():
