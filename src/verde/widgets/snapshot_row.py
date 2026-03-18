@@ -9,7 +9,7 @@ from gi.repository import Adw, Gtk
 
 # gettext stub
 try:
-    _("test")
+    _("test")  # type: ignore[used-before-def]
 except NameError:
     import builtins
 
@@ -18,7 +18,7 @@ except NameError:
         def _(s: str) -> str:
             return s
 
-        builtins._ = _
+        builtins._ = _  # type: ignore[attr-defined]
 
 
 def _format_timestamp(iso_ts: str) -> str:
