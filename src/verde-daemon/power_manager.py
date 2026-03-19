@@ -1,17 +1,19 @@
-"""Power and suspend issue detection for the Verde daemon.
+"""Power and suspend issue detection and fix application for the Verde daemon.
 
 Detects NVIDIA suspend/resume service issues, hibernate configuration
 problems, Secure Boot MOK enrollment status, and Wayland-specific
-NVIDIA configuration issues.
+NVIDIA configuration issues.  Also applies one-click fixes for suspend
+and hibernate problems.
 
-All detection is read-only.  External dependencies (subprocess calls,
-file reads) are injected for testability.
+External dependencies (subprocess calls, file reads/writes) are injected
+for testability.
 
-References: FR24, FR25, FR26, FR27, FR56, FR92; Story 4.1.
+References: FR24-FR30, FR56, FR89, FR92; Stories 4.1, 4.2.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import subprocess
@@ -36,8 +38,22 @@ STATUS_WORKING = "working"
 STATUS_ISSUES_FOUND = "issues_found"
 STATUS_UNKNOWN = "unknown"
 
+# ── Service constants (Story 4.2) ────────────────────────────────────
+NVIDIA_SUSPEND_SERVICE = "nvidia-suspend.service"
+NVIDIA_RESUME_SERVICE = "nvidia-resume.service"
+NVIDIA_HIBERNATE_SERVICE = "nvidia-hibernate.service"
+
+MODPROBE_CONF_PATH = "/etc/modprobe.d/nvidia-power-management.conf"
+MODPROBE_CONTENT = (
+    "options nvidia NVreg_PreserveVideoMemoryAllocations=1\n"
+    "options nvidia NVreg_TemporaryFilePath=/var/tmp\n"
+)
+
+_SUSPEND_SERVICES = (NVIDIA_SUSPEND_SERVICE, NVIDIA_RESUME_SERVICE, NVIDIA_HIBERNATE_SERVICE)
+
 # ── Default subprocess runner ─────────────────────────────────────────
 _SUBPROCESS_TIMEOUT = 10
+_INITRAMFS_TIMEOUT = 120
 
 
 def _default_run(
@@ -65,6 +81,26 @@ def _default_read_file(path: str) -> str:
             return f.read()
     except OSError:
         return ""
+
+
+def _default_write_file(path: str, content: str) -> None:
+    """Write *content* to *path* atomically (write tmp, then rename)."""
+    import tempfile
+
+    parent = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=parent, prefix=".verde-")
+    try:
+        os.write(fd, content.encode("utf-8"))
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.rename(tmp, path)
+    except BaseException:
+        if fd >= 0:
+            os.close(fd)
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
 
 
 def _make_issue(
@@ -102,10 +138,12 @@ class PowerManager:
         run: Callable[..., subprocess.CompletedProcess[str]] | None = None,
         read_file: Callable[[str], str] | None = None,
         list_modprobe_confs: Callable[[], list[str]] | None = None,
+        write_file: Callable[[str, str], None] | None = None,
     ) -> None:
         self._run = run or _default_run
         self._read = read_file or _default_read_file
         self._list_modprobe_confs = list_modprobe_confs or _default_list_modprobe_confs
+        self._write = write_file or _default_write_file
 
     def get_power_status(self) -> dict[str, Any]:
         """Return full power status dict suitable for D-Bus ``a{sv}`` wrapping.
@@ -634,3 +672,344 @@ class PowerManager:
                     return True
 
         return False
+
+    # ══════════════════════════════════════════════════════════════════════
+    # Story 4.2 — Fix application
+    # ══════════════════════════════════════════════════════════════════════
+
+    # ── Service helpers ──────────────────────────────────────────────────
+
+    def _check_service_exists(self, service: str) -> bool:
+        """Return True if the systemd unit file exists on the system."""
+        try:
+            result = self._run(["systemctl", "cat", service])
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
+
+    def _enable_service(self, service: str) -> tuple[bool, str]:
+        """Enable a systemd service.  Returns (success, message)."""
+        try:
+            result = self._run(
+                ["systemctl", "enable", service],
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return True, f"Enabled {service}"
+            return False, f"Failed to enable {service}: {result.stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            return False, f"Timed out enabling {service}"
+        except OSError as exc:
+            return False, f"Error enabling {service}: {exc}"
+
+    def _check_modprobe_config(self) -> bool:
+        """Return True if the NVIDIA power management modprobe config exists with correct content."""
+        content = self._read(MODPROBE_CONF_PATH)
+        return (
+            "NVreg_PreserveVideoMemoryAllocations=1" in content
+            and "NVreg_TemporaryFilePath" in content
+        )
+
+    def _write_modprobe_config(self) -> tuple[bool, str]:
+        """Write the NVIDIA power management modprobe config.  Returns (success, message)."""
+        try:
+            self._write(MODPROBE_CONF_PATH, MODPROBE_CONTENT)
+            return True, f"Wrote {MODPROBE_CONF_PATH}"
+        except OSError as exc:
+            return False, f"Failed to write {MODPROBE_CONF_PATH}: {exc}"
+
+    def _run_update_initramfs(self) -> tuple[bool, str]:
+        """Run ``update-initramfs -u``.  Returns (success, message)."""
+        try:
+            result = self._run(
+                ["update-initramfs", "-u"],
+                timeout=_INITRAMFS_TIMEOUT,
+            )
+            if result.returncode == 0:
+                return True, "Initramfs updated successfully"
+            return False, f"update-initramfs failed: {result.stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            return False, "update-initramfs timed out"
+        except OSError as exc:
+            return False, f"Error running update-initramfs: {exc}"
+
+    # ── Fix operations ───────────────────────────────────────────────────
+
+    def fix_suspend(
+        self,
+        op_id: str,
+        progress_cb: Callable[[str, float, str], None],
+        complete_cb: Callable[[str, bool, str], None],
+    ) -> None:
+        """Apply suspend fix: enable NVIDIA suspend/resume/hibernate services.
+
+        Parameters
+        ----------
+        op_id : str
+            Operation identifier for progress tracking.
+        progress_cb : callable
+            Called as ``progress_cb(op_id, percent, message)``.
+        complete_cb : callable
+            Called as ``complete_cb(op_id, success, message)``.
+        """
+        _completed = False
+        try:
+            # Step 1 (0-10%): Check services exist
+            progress_cb(op_id, 5.0, "Checking NVIDIA suspend services...")
+            missing = []
+            for svc in _SUSPEND_SERVICES:
+                if not self._check_service_exists(svc):
+                    missing.append(svc)
+            if missing:
+                _completed = True
+                complete_cb(
+                    op_id,
+                    False,
+                    f"Required services not found: {', '.join(missing)}. "
+                    f"Is the NVIDIA driver installed?",
+                )
+                return
+
+            # Step 2 (10-30%): Check already enabled
+            progress_cb(op_id, 15.0, "Checking service status...")
+            needs_enable = []
+            for svc in _SUSPEND_SERVICES:
+                if not self._is_service_enabled(svc):
+                    needs_enable.append(svc)
+
+            if not needs_enable:
+                _completed = True
+                complete_cb(
+                    op_id,
+                    True,
+                    "All suspend services are already enabled — no changes needed.",
+                )
+                return
+
+            # Step 3 (30-70%): Enable each service
+            step_pct = 40.0 / len(needs_enable)
+            for i, svc in enumerate(needs_enable):
+                pct = 30.0 + step_pct * i
+                progress_cb(op_id, pct, f"Enabling {svc}...")
+                ok, msg = self._enable_service(svc)
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, msg)
+                    return
+
+            # Step 4 (70-90%): Verify
+            progress_cb(op_id, 75.0, "Verifying services are enabled...")
+            failed_verify = []
+            for svc in needs_enable:
+                if not self._is_service_enabled(svc):
+                    failed_verify.append(svc)
+            if failed_verify:
+                _completed = True
+                complete_cb(
+                    op_id,
+                    False,
+                    f"Verification failed — services not enabled after attempt: "
+                    f"{', '.join(failed_verify)}",
+                )
+                return
+
+            # Step 5 (90-100%): Complete
+            progress_cb(op_id, 95.0, "Suspend fix complete.")
+            enabled_str = ", ".join(needs_enable)
+            _completed = True
+            complete_cb(op_id, True, f"Enabled suspend services: {enabled_str}")
+
+        except Exception as exc:
+            log.exception("Unhandled error in fix_suspend for %s", op_id)
+            if not _completed:
+                complete_cb(op_id, False, f"Unexpected error: {exc}")
+
+    def fix_hibernate(
+        self,
+        op_id: str,
+        progress_cb: Callable[[str, float, str], None],
+        complete_cb: Callable[[str, bool, str], None],
+        reboot_cb: Callable[[bool, str], None] | None = None,
+    ) -> None:
+        """Apply hibernate fix: write modprobe config, enable service, rebuild initramfs.
+
+        Parameters
+        ----------
+        op_id : str
+            Operation identifier for progress tracking.
+        progress_cb : callable
+            Called as ``progress_cb(op_id, percent, message)``.
+        complete_cb : callable
+            Called as ``complete_cb(op_id, success, message)``.
+        reboot_cb : callable, optional
+            Called as ``reboot_cb(required, reason)`` when a reboot is needed.
+        """
+        changes_made: list[str] = []
+        _completed = False
+        try:
+            # Step 1 (0-10%): Check hibernate service exists
+            progress_cb(op_id, 5.0, "Checking NVIDIA hibernate service...")
+            if not self._check_service_exists(NVIDIA_HIBERNATE_SERVICE):
+                _completed = True
+                complete_cb(
+                    op_id,
+                    False,
+                    f"{NVIDIA_HIBERNATE_SERVICE} not found. Is the NVIDIA driver installed?",
+                )
+                return
+
+            # Step 2 (10-20%): Check modprobe config
+            progress_cb(op_id, 15.0, "Checking modprobe configuration...")
+            config_exists = self._check_modprobe_config()
+
+            # Step 3 (20-30%): Check hibernate service enabled
+            progress_cb(op_id, 25.0, "Checking hibernate service status...")
+            service_enabled = self._is_service_enabled(NVIDIA_HIBERNATE_SERVICE)
+
+            # P-1: Even when config+service are OK, still verify initramfs
+            # is up-to-date (a previous run may have failed at initramfs).
+            if config_exists and service_enabled:
+                progress_cb(op_id, 75.0, "Verifying initramfs is up-to-date...")
+                ok, msg = self._run_update_initramfs()
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, msg)
+                    return
+                _completed = True
+                complete_cb(
+                    op_id,
+                    True,
+                    "Hibernate is already configured — verified initramfs.",
+                )
+                return
+
+            # Step 4 (30-50%): Write modprobe config if needed
+            if not config_exists:
+                progress_cb(op_id, 35.0, f"Writing {MODPROBE_CONF_PATH}...")
+                ok, msg = self._write_modprobe_config()
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, msg)
+                    return
+                changes_made.append("Wrote modprobe config")
+
+            # Step 5 (50-70%): Enable hibernate service if needed
+            if not service_enabled:
+                progress_cb(op_id, 55.0, f"Enabling {NVIDIA_HIBERNATE_SERVICE}...")
+                ok, msg = self._enable_service(NVIDIA_HIBERNATE_SERVICE)
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, msg)
+                    return
+                changes_made.append(f"Enabled {NVIDIA_HIBERNATE_SERVICE}")
+
+                # P-5: Verify service enablement (same pattern as fix_suspend)
+                if not self._is_service_enabled(NVIDIA_HIBERNATE_SERVICE):
+                    _completed = True
+                    complete_cb(
+                        op_id,
+                        False,
+                        f"Verification failed — {NVIDIA_HIBERNATE_SERVICE} "
+                        f"not enabled after attempt.",
+                    )
+                    return
+
+            # Step 6 (70-90%): Rebuild initramfs
+            progress_cb(op_id, 75.0, "Rebuilding initramfs (this may take a minute)...")
+            ok, msg = self._run_update_initramfs()
+            if not ok:
+                _completed = True
+                complete_cb(op_id, False, msg)
+                return
+            changes_made.append("Rebuilt initramfs")
+
+            # Step 7 (90-100%): Verify and complete
+            progress_cb(op_id, 95.0, "Hibernate fix complete.")
+            summary = "; ".join(changes_made)
+            _completed = True
+            complete_cb(
+                op_id,
+                True,
+                f"Hibernate configured: {summary}. Reboot required.",
+            )
+
+            if reboot_cb:
+                reboot_cb(True, "Reboot required to apply hibernate configuration changes.")
+
+        except Exception as exc:
+            log.exception("Unhandled error in fix_hibernate for %s", op_id)
+            if not _completed:
+                complete_cb(op_id, False, f"Unexpected error: {exc}")
+
+    # ── Pre-flight checks ────────────────────────────────────────────────
+
+    def get_preflight_suspend(self) -> dict[str, Any]:
+        """Return pre-flight check for suspend fix as an ``a{sv}``-compatible dict."""
+        changes: list[dict[str, str]] = []
+        all_fixed = True
+
+        for svc in _SUSPEND_SERVICES:
+            exists = self._check_service_exists(svc)
+            enabled = self._is_service_enabled(svc) if exists else False
+            if not enabled:
+                all_fixed = False
+            changes.append(
+                {
+                    "description": f"Enable {svc}",
+                    "current_state": "enabled"
+                    if enabled
+                    else ("disabled" if exists else "missing"),
+                    "target_state": "enabled",
+                }
+            )
+
+        return {
+            "ready": all(c["current_state"] != "missing" for c in changes),
+            "changes": changes,
+            "already_fixed": all_fixed,
+        }
+
+    def get_preflight_hibernate(self) -> dict[str, Any]:
+        """Return pre-flight check for hibernate fix as an ``a{sv}``-compatible dict."""
+        changes: list[dict[str, str]] = []
+        all_fixed = True
+
+        # Modprobe config
+        config_ok = self._check_modprobe_config()
+        if not config_ok:
+            all_fixed = False
+        changes.append(
+            {
+                "description": f"Write NVIDIA power management config to {MODPROBE_CONF_PATH}",
+                "current_state": "present" if config_ok else "absent",
+                "target_state": "present",
+            }
+        )
+
+        # Hibernate service
+        exists = self._check_service_exists(NVIDIA_HIBERNATE_SERVICE)
+        enabled = self._is_service_enabled(NVIDIA_HIBERNATE_SERVICE) if exists else False
+        if not enabled:
+            all_fixed = False
+        changes.append(
+            {
+                "description": f"Enable {NVIDIA_HIBERNATE_SERVICE}",
+                "current_state": "enabled" if enabled else ("disabled" if exists else "missing"),
+                "target_state": "enabled",
+            }
+        )
+
+        # Initramfs rebuild
+        changes.append(
+            {
+                "description": "Rebuild initramfs to apply module parameters",
+                "current_state": "pending" if not config_ok else "up-to-date",
+                "target_state": "up-to-date",
+            }
+        )
+
+        return {
+            "ready": exists,
+            "changes": changes,
+            "already_fixed": all_fixed,
+        }

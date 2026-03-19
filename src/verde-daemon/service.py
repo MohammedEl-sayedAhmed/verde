@@ -23,7 +23,13 @@ from verde_daemon.apt_errors import (
     remove_operation_marker,
     write_operation_marker,
 )
-from verde_daemon.audit import OP_INSTALL_DRIVER, OP_ROLLBACK_DRIVER, AuditLogger
+from verde_daemon.audit import (
+    OP_FIX_HIBERNATE,
+    OP_FIX_SUSPEND,
+    OP_INSTALL_DRIVER,
+    OP_ROLLBACK_DRIVER,
+    AuditLogger,
+)
 from verde_daemon.degraded_states import (
     DegradedState,
     build_state_info,
@@ -480,6 +486,14 @@ class VerdeService:
             self._dispatch_repair_dpkg(invocation, sender)
             return
 
+        # Power fix dispatch (Story 4.2)
+        if method_name == "FixSuspend":
+            self._dispatch_fix_suspend(invocation, sender)
+            return
+        if method_name == "FixHibernate":
+            self._dispatch_fix_hibernate(invocation, sender)
+            return
+
         # Remaining methods — stubs until actual implementations
         invocation.return_dbus_error(
             "org.freedesktop.DBus.Error.UnknownMethod",
@@ -532,6 +546,11 @@ class VerdeService:
             # Rollback-specific pre-flight (Story 3.3)
             if operation.startswith("rollback:"):
                 self._dispatch_rollback_preflight(operation, invocation)
+                return
+
+            # Power fix pre-flight (Story 4.2)
+            if operation in ("fix_suspend", "fix_hibernate"):
+                self._dispatch_power_preflight(operation, invocation)
                 return
 
             pf_result = self._preflight.run_all_checks(operation)
@@ -861,6 +880,222 @@ class VerdeService:
             invocation.return_dbus_error(
                 "com.verde.Error.InternalError",
                 "Internal error while retrieving power status.",
+            )
+
+    # ------------------------------------------------------------------
+    # Power fix dispatch (Story 4.2)
+    # ------------------------------------------------------------------
+
+    def _dispatch_fix_suspend(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle FixSuspend: validate, guard, return op_id, spawn worker."""
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                self._operation_in_progress_message(),
+            )
+            return
+
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+        self._current_op_type = "FixSuspend"
+        self._current_op_started = time.monotonic()
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        if self._audit:
+            self._audit.log(
+                OP_FIX_SUSPEND,
+                {},
+                sender,
+                "started",
+            )
+
+        thread = threading.Thread(
+            target=self._do_fix_suspend,
+            args=(op_id, sender),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_fix_suspend(self, op_id: str, sender: str) -> None:
+        """Worker thread for FixSuspend."""
+        inhibitor_fd: int | None = None
+        try:
+            GLib.idle_add(self._on_idle_hold)
+            inhibitor_fd = self._acquire_inhibitor_lock("Fixing NVIDIA suspend services")
+
+            def _progress(oid: str, pct: float, msg: str) -> None:
+                self._emit_signal("OperationProgress", "(sds)", (oid, pct, msg))
+
+            def _complete(oid: str, success: bool, msg: str) -> None:
+                self._emit_signal("OperationComplete", "(sbs)", (oid, success, msg))
+                if self._audit:
+                    self._audit.log(
+                        OP_FIX_SUSPEND,
+                        {},
+                        sender,
+                        "success" if success else "failed",
+                        error=None if success else msg,
+                    )
+
+            self._power_manager.fix_suspend(op_id, _progress, _complete)
+
+        except Exception as exc:
+            log.exception("Unhandled error in fix_suspend worker for %s", op_id)
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                (op_id, False, f"Internal error: {exc}"),
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_FIX_SUSPEND,
+                    {},
+                    sender,
+                    "failed",
+                    error=str(exc),
+                )
+        finally:
+            self._release_inhibitor_lock(inhibitor_fd)
+
+            def _release_guard() -> bool:
+                self._operation_in_progress = False
+                self._current_op_id = None
+                self._current_op_type = None
+                self._current_op_started = None
+                self._on_idle_release()
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_release_guard)
+
+    def _dispatch_fix_hibernate(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle FixHibernate: validate, guard, return op_id, spawn worker."""
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                self._operation_in_progress_message(),
+            )
+            return
+
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+        self._current_op_type = "FixHibernate"
+        self._current_op_started = time.monotonic()
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        if self._audit:
+            self._audit.log(
+                OP_FIX_HIBERNATE,
+                {},
+                sender,
+                "started",
+            )
+
+        thread = threading.Thread(
+            target=self._do_fix_hibernate,
+            args=(op_id, sender),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_fix_hibernate(self, op_id: str, sender: str) -> None:
+        """Worker thread for FixHibernate."""
+        inhibitor_fd: int | None = None
+        try:
+            GLib.idle_add(self._on_idle_hold)
+            inhibitor_fd = self._acquire_inhibitor_lock("Fixing NVIDIA hibernate configuration")
+
+            def _progress(oid: str, pct: float, msg: str) -> None:
+                self._emit_signal("OperationProgress", "(sds)", (oid, pct, msg))
+
+            def _complete(oid: str, success: bool, msg: str) -> None:
+                self._emit_signal("OperationComplete", "(sbs)", (oid, success, msg))
+                if self._audit:
+                    self._audit.log(
+                        OP_FIX_HIBERNATE,
+                        {},
+                        sender,
+                        "success" if success else "failed",
+                        error=None if success else msg,
+                    )
+
+            def _reboot(required: bool, reason: str) -> None:
+                self._emit_signal("RebootRequired", "(bs)", (required, reason))
+
+            self._power_manager.fix_hibernate(op_id, _progress, _complete, _reboot)
+
+        except Exception as exc:
+            log.exception("Unhandled error in fix_hibernate worker for %s", op_id)
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                (op_id, False, f"Internal error: {exc}"),
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_FIX_HIBERNATE,
+                    {},
+                    sender,
+                    "failed",
+                    error=str(exc),
+                )
+        finally:
+            self._release_inhibitor_lock(inhibitor_fd)
+
+            def _release_guard() -> bool:
+                self._operation_in_progress = False
+                self._current_op_id = None
+                self._current_op_type = None
+                self._current_op_started = None
+                self._on_idle_release()
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_release_guard)
+
+    def _dispatch_power_preflight(
+        self,
+        operation: str,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle GetPreflightCheck for fix_suspend / fix_hibernate (Story 4.2)."""
+        try:
+            if operation == "fix_suspend":
+                pf = self._power_manager.get_preflight_suspend()
+            else:
+                pf = self._power_manager.get_preflight_hibernate()
+
+            gv_changes: list[dict[str, GLib.Variant]] = []
+            for ch in pf["changes"]:
+                gv_changes.append(
+                    {
+                        "description": GLib.Variant("s", ch["description"]),
+                        "current_state": GLib.Variant("s", ch["current_state"]),
+                        "target_state": GLib.Variant("s", ch["target_state"]),
+                    }
+                )
+
+            result: dict[str, GLib.Variant] = {
+                "ready": GLib.Variant("b", pf["ready"]),
+                "already_fixed": GLib.Variant("b", pf["already_fixed"]),
+                "changes": GLib.Variant("aa{sv}", gv_changes),
+            }
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
+        except Exception:
+            log.exception("Power preflight dispatch failed for %s", operation)
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while running power pre-flight check.",
             )
 
     # ------------------------------------------------------------------

@@ -6,10 +6,16 @@ import subprocess
 from unittest.mock import MagicMock, patch
 
 from power_manager import (
+    _SUSPEND_SERVICES,
     ISSUE_HIBERNATE,
     ISSUE_SECURE_BOOT,
     ISSUE_SUSPEND,
     ISSUE_WAYLAND,
+    MODPROBE_CONF_PATH,
+    MODPROBE_CONTENT,
+    NVIDIA_HIBERNATE_SERVICE,
+    NVIDIA_RESUME_SERVICE,
+    NVIDIA_SUSPEND_SERVICE,
     SEVERITY_CRITICAL,
     SEVERITY_OK,
     SEVERITY_WARNING,
@@ -694,3 +700,433 @@ class TestOverallStatus:
         assert len(calls) > 0
         for cmd, _kwargs in calls:
             assert isinstance(cmd, list), f"Expected list, got {type(cmd)}: {cmd}"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Story 4.2 — Power Fix Application Tests
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _run_fix_services(
+    *,
+    exists: dict[str, bool] | None = None,
+    enabled: dict[str, bool] | None = None,
+    enable_ok: dict[str, bool] | None = None,
+    initramfs_ok: bool = True,
+):
+    """Return a mock run function for fix operations.
+
+    Parameters
+    ----------
+    exists : dict mapping service name to bool (does it exist?)
+    enabled : dict mapping service name to bool (is it enabled?)
+    enable_ok : dict mapping service name to bool (does enable succeed?)
+    initramfs_ok : bool — does update-initramfs succeed?
+    """
+    _exists = exists or {}
+    _enabled = enabled or {}
+    _enable_ok = enable_ok or {}
+
+    def _run(cmd, **kw):
+        # systemctl cat <service> — check existence
+        if len(cmd) == 3 and cmd[:2] == ["systemctl", "cat"]:
+            svc = cmd[2]
+            if _exists.get(svc, True):
+                return _make_cp(returncode=0)
+            return _make_cp(returncode=1, stdout="")
+
+        # systemctl is-enabled <service>
+        if len(cmd) == 3 and cmd[:2] == ["systemctl", "is-enabled"]:
+            svc = cmd[2]
+            if _enabled.get(svc, False):
+                return _make_cp(stdout="enabled\n", returncode=0)
+            return _make_cp(stdout="disabled\n", returncode=1)
+
+        # systemctl enable <service>
+        if len(cmd) == 3 and cmd[:2] == ["systemctl", "enable"]:
+            svc = cmd[2]
+            if _enable_ok.get(svc, True):
+                # After enabling, mark as enabled for subsequent is-enabled checks
+                _enabled[svc] = True
+                return _make_cp(returncode=0)
+            return _make_cp(returncode=1, stdout="Failed to enable\n")
+
+        # update-initramfs -u
+        if cmd[:2] == ["update-initramfs", "-u"]:
+            if initramfs_ok:
+                return _make_cp(returncode=0)
+            return _make_cp(returncode=1, stdout="update-initramfs error\n")
+
+        # loginctl — for wayland detection fallback
+        if cmd[0] == "loginctl":
+            return _make_cp(returncode=1)
+
+        # mokutil
+        if cmd[0] == "mokutil":
+            return _make_cp(stdout="SecureBoot disabled\n")
+
+        return _make_cp(returncode=1)
+
+    return _run
+
+
+class TestFixSuspend:
+    """Story 4.2 Task 2: fix_suspend() method."""
+
+    def test_fix_suspend_success(self):
+        """All 3 services disabled → enable all → success."""
+        progress_calls = []
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={svc: False for svc in _SUSPEND_SERVICES},
+                enable_ok={svc: True for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op1",
+            lambda oid, pct, msg: progress_calls.append((oid, pct, msg)),
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert len(complete_calls) == 1
+        assert complete_calls[0][1] is True  # success
+        assert "Enabled" in complete_calls[0][2]
+        assert len(progress_calls) >= 3  # multiple progress steps
+
+    def test_fix_suspend_already_applied(self):
+        """All services already enabled → no changes, still reports success."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={svc: True for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op2",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert len(complete_calls) == 1
+        assert complete_calls[0][1] is True
+        assert "already" in complete_calls[0][2].lower()
+
+    def test_fix_suspend_partial(self):
+        """Some services enabled → only missing ones are enabled."""
+        progress_calls = []
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={
+                    NVIDIA_SUSPEND_SERVICE: True,
+                    NVIDIA_RESUME_SERVICE: False,
+                    NVIDIA_HIBERNATE_SERVICE: False,
+                },
+                enable_ok={svc: True for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op3",
+            lambda oid, pct, msg: progress_calls.append((oid, pct, msg)),
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is True
+        # Only the disabled ones should appear in the message
+        assert NVIDIA_RESUME_SERVICE in complete_calls[0][2]
+        assert NVIDIA_SUSPEND_SERVICE not in complete_calls[0][2]
+
+    def test_fix_suspend_enable_fails(self):
+        """systemctl enable fails → reports failure."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={svc: False for svc in _SUSPEND_SERVICES},
+                enable_ok={
+                    NVIDIA_SUSPEND_SERVICE: False,
+                    NVIDIA_RESUME_SERVICE: True,
+                    NVIDIA_HIBERNATE_SERVICE: True,
+                },
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op4",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert "Failed" in complete_calls[0][2]
+
+    def test_fix_suspend_service_missing(self):
+        """Service not found on system → reports failure."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                exists={NVIDIA_SUSPEND_SERVICE: False},
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op5",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert "not found" in complete_calls[0][2].lower()
+
+    def test_fix_suspend_exception_recovery(self):
+        """Unhandled exception in subprocess → caught, reported as failure."""
+        complete_calls = []
+
+        def _boom(cmd, **kw):
+            raise RuntimeError("test explosion")
+
+        pm = PowerManager(run=_boom, read_file=lambda p: "")
+        pm.fix_suspend(
+            "op6",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert "Unexpected" in complete_calls[0][2]
+
+
+class TestFixHibernate:
+    """Story 4.2 Task 3: fix_hibernate() method."""
+
+    def test_fix_hibernate_success(self):
+        """Full hibernate fix: config + service + initramfs."""
+        progress_calls = []
+        complete_calls = []
+        reboot_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: False},
+            ),
+            read_file=lambda p: "",
+            write_file=lambda p, c: None,
+        )
+        pm.fix_hibernate(
+            "op1",
+            lambda oid, pct, msg: progress_calls.append((oid, pct, msg)),
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+            lambda req, reason: reboot_calls.append((req, reason)),
+        )
+        assert complete_calls[0][1] is True
+        assert "Reboot required" in complete_calls[0][2]
+        assert len(reboot_calls) == 1
+        assert reboot_calls[0][0] is True
+        assert len(progress_calls) >= 4
+
+    def test_fix_hibernate_already_applied(self):
+        """Config exists + service enabled → still verifies initramfs, reports success."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: True},
+            ),
+            read_file=lambda p: MODPROBE_CONTENT if p == MODPROBE_CONF_PATH else "",
+        )
+        pm.fix_hibernate(
+            "op2",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is True
+        assert "already" in complete_calls[0][2].lower()
+        assert "initramfs" in complete_calls[0][2].lower()
+
+    def test_fix_hibernate_initramfs_failure(self):
+        """initramfs rebuild fails → reports error."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: False},
+                initramfs_ok=False,
+            ),
+            read_file=lambda p: "",
+            write_file=lambda p, c: None,
+        )
+        pm.fix_hibernate(
+            "op3",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert (
+            "initramfs" in complete_calls[0][2].lower()
+            or "update-initramfs" in complete_calls[0][2].lower()
+        )
+
+    def test_fix_hibernate_write_failure(self):
+        """Config write fails → reports error."""
+        complete_calls = []
+
+        def _fail_write(path, content):
+            raise OSError("Permission denied")
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: False},
+            ),
+            read_file=lambda p: "",
+            write_file=_fail_write,
+        )
+        pm.fix_hibernate(
+            "op4",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert "Failed to write" in complete_calls[0][2]
+
+    def test_fix_hibernate_service_missing(self):
+        """Hibernate service not found → failure."""
+        complete_calls = []
+
+        pm = PowerManager(
+            run=_run_fix_services(
+                exists={NVIDIA_HIBERNATE_SERVICE: False},
+            ),
+            read_file=lambda p: "",
+        )
+        pm.fix_hibernate(
+            "op5",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete_calls.append((oid, ok, msg)),
+        )
+        assert complete_calls[0][1] is False
+        assert "not found" in complete_calls[0][2].lower()
+
+
+class TestPreflightPower:
+    """Story 4.2 Task 4: Pre-flight checks for power fixes."""
+
+    def test_preflight_suspend_all_disabled(self):
+        """All services exist but disabled → ready=True, already_fixed=False."""
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={svc: False for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pf = pm.get_preflight_suspend()
+        assert pf["ready"] is True
+        assert pf["already_fixed"] is False
+        assert len(pf["changes"]) == 3
+        for ch in pf["changes"]:
+            assert ch["current_state"] == "disabled"
+            assert ch["target_state"] == "enabled"
+
+    def test_preflight_suspend_all_enabled(self):
+        """All services enabled → already_fixed=True."""
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={svc: True for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pf = pm.get_preflight_suspend()
+        assert pf["already_fixed"] is True
+        assert pf["ready"] is True
+
+    def test_preflight_suspend_service_missing(self):
+        """Service missing → ready=False."""
+        pm = PowerManager(
+            run=_run_fix_services(
+                exists={NVIDIA_SUSPEND_SERVICE: False},
+                enabled={svc: False for svc in _SUSPEND_SERVICES},
+            ),
+            read_file=lambda p: "",
+        )
+        pf = pm.get_preflight_suspend()
+        assert pf["ready"] is False
+        missing_ch = [c for c in pf["changes"] if c["current_state"] == "missing"]
+        assert len(missing_ch) >= 1
+
+    def test_preflight_hibernate_structure(self):
+        """Hibernate preflight returns expected structure."""
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: False},
+            ),
+            read_file=lambda p: "",
+        )
+        pf = pm.get_preflight_hibernate()
+        assert "ready" in pf
+        assert "changes" in pf
+        assert "already_fixed" in pf
+        assert len(pf["changes"]) == 3  # modprobe + service + initramfs
+        descs = [c["description"] for c in pf["changes"]]
+        assert any("modprobe" in d.lower() or "config" in d.lower() for d in descs)
+        assert any("initramfs" in d.lower() for d in descs)
+
+    def test_preflight_hibernate_already_fixed(self):
+        """Config + service already in place → already_fixed=True."""
+        pm = PowerManager(
+            run=_run_fix_services(
+                enabled={NVIDIA_HIBERNATE_SERVICE: True},
+            ),
+            read_file=lambda p: MODPROBE_CONTENT if p == MODPROBE_CONF_PATH else "",
+        )
+        pf = pm.get_preflight_hibernate()
+        assert pf["already_fixed"] is True
+
+
+class TestOperationGuard:
+    """Story 4.2 Task 9: OperationInProgress guard and D-Bus wiring."""
+
+    def test_dbus_fix_suspend_dispatch_exists(self):
+        """Verify FixSuspend dispatch method is wired in service.py."""
+        import pathlib
+
+        from service import VerdeService
+
+        _XML_PATH = pathlib.Path(__file__).resolve().parents[2] / "data" / "com.verde.Manager.xml"
+        _XML = _XML_PATH.read_text()
+
+        svc = VerdeService(
+            loop=MagicMock(),
+            on_idle_reset=MagicMock(),
+            introspection_xml=_XML,
+        )
+        assert hasattr(svc, "_dispatch_fix_suspend")
+        assert hasattr(svc, "_dispatch_fix_hibernate")
+        assert hasattr(svc, "_dispatch_power_preflight")
+
+    def test_subprocess_list_form_in_fix(self):
+        """All subprocess calls in fix operations use list form."""
+        calls = []
+
+        def _tracking_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            assert "shell" not in kwargs or kwargs["shell"] is False
+            # Return success for all commands
+            if cmd[:2] == ["systemctl", "cat"]:
+                return _make_cp(returncode=0)
+            if cmd[:2] == ["systemctl", "is-enabled"]:
+                return _make_cp(stdout="disabled\n", returncode=1)
+            if cmd[:2] == ["systemctl", "enable"]:
+                return _make_cp(returncode=0)
+            return _make_cp(returncode=1)
+
+        pm = PowerManager(run=_tracking_run, read_file=lambda p: "")
+        # fix_suspend goes through all subprocess paths
+        pm.fix_suspend(
+            "track1",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: None,
+        )
+        assert len(calls) > 0
+        for cmd, _kwargs in calls:
+            assert isinstance(cmd, list)
