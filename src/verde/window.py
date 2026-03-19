@@ -2,7 +2,7 @@
 
 import logging
 
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from verde.dbus_client import VerdeDBusClient
 from verde.gpu_state import GPUState
@@ -12,6 +12,19 @@ from verde.views.drivers import DriversPage
 from verde.views.power import PowerPage
 
 log = logging.getLogger("verde.window")
+
+# gettext stub
+try:
+    _("test")  # type: ignore[used-before-def]
+except NameError:
+    import builtins
+
+    if not hasattr(builtins, "_"):
+
+        def _(s: str) -> str:
+            return s
+
+        builtins._ = _  # type: ignore[attr-defined]
 
 
 def _get_settings() -> Gio.Settings | None:
@@ -165,8 +178,10 @@ class VerdeApplication(Adw.Application):
         super().__init__(application_id=application_id, **kwargs)
         self._version = version
         self._gpu_lost_dialog_shown = False
+        self._post_reboot_checked = False
         self.gpu_state = GPUState()
         self.dbus_client = VerdeDBusClient(gpu_state=self.gpu_state)
+        self.dbus_client.connect("notify::connected", self._on_dbus_connected)
         self.connect("activate", self._on_activate)
 
         quit_action = Gio.SimpleAction.new("quit", None)
@@ -200,6 +215,105 @@ class VerdeApplication(Adw.Application):
         else:
             # Reset guard when leaving gpu_lost state
             self._gpu_lost_dialog_shown = False
+
+    def _on_dbus_connected(self, client, _pspec) -> None:
+        """Query post-reboot summary once when D-Bus connects (Story 3.5)."""
+        if not client.get_property("connected"):
+            return
+        if self._post_reboot_checked:
+            return
+        self._post_reboot_checked = True
+        client.call_method_async(
+            "GetPostRebootSummary",
+            None,
+            self._on_post_reboot_summary_reply,
+        )
+
+    def _on_post_reboot_summary_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
+        """Handle GetPostRebootSummary reply."""
+        try:
+            reply = proxy.call_finish(result)
+        except GLib.Error as exc:
+            log.warning("GetPostRebootSummary failed: %s", exc.message)
+            return
+
+        summary_variant = reply.get_child_value(0)
+        has_pending = summary_variant.lookup_value("has_pending", GLib.VariantType("b"))
+        if has_pending is None or not has_pending.get_boolean():
+            return
+
+        # Extract summary fields
+        def _get_str(key: str) -> str:
+            v = summary_variant.lookup_value(key, GLib.VariantType("s"))
+            return v.get_string() if v else ""
+
+        def _get_bool(key: str) -> bool:
+            v = summary_variant.lookup_value(key, GLib.VariantType("b"))
+            return v.get_boolean() if v else False
+
+        result_str = _get_str("result")
+        message = _get_str("message")
+        guidance = _get_str("recovery_guidance")
+
+        GLib.idle_add(
+            self._show_post_reboot_dialog,
+            result_str,
+            message,
+            guidance,
+        )
+
+    def _show_post_reboot_dialog(
+        self,
+        result_str: str,
+        message: str,
+        guidance: str,
+    ) -> bool:
+        """Show the post-reboot summary dialog on the main thread."""
+        win = self.props.active_window
+        if win is None:
+            return GLib.SOURCE_REMOVE
+
+        if result_str == "success":
+            heading = _("Operation Complete")
+            body = message
+        elif result_str == "partial":
+            heading = _("Operation Complete — Review Recommended")
+            body = message
+        else:
+            heading = _("Operation May Have Failed")
+            body = f"{message}\n\n{guidance}" if guidance else message
+
+        dialog = Adw.MessageDialog(
+            transient_for=win,
+            heading=heading,
+            body=body,
+        )
+        dialog.add_response("ok", _("OK"))
+
+        if result_str == "partial":
+            dialog.add_response("drivers", _("View Drivers"))
+            dialog.set_response_appearance("drivers", Adw.ResponseAppearance.SUGGESTED)
+        elif result_str == "failed":
+            dialog.add_response("diagnostics", _("Open Diagnostics"))
+            dialog.set_response_appearance("diagnostics", Adw.ResponseAppearance.SUGGESTED)
+
+        dialog.connect("response", self._on_post_reboot_response)
+        dialog.present()
+        return GLib.SOURCE_REMOVE
+
+    def _on_post_reboot_response(self, dialog: Adw.MessageDialog, response: str) -> None:
+        """Handle post-reboot dialog response — clear state and navigate."""
+        # Clear the pending summary on the daemon
+        self.dbus_client.call_method_async("ClearPostRebootSummary", None)
+
+        win = self.props.active_window
+        if win is None:
+            return
+
+        if response == "drivers" and hasattr(win, "view_stack"):
+            win.view_stack.set_visible_child_name("drivers")
+        elif response == "diagnostics" and hasattr(win, "view_stack"):
+            win.view_stack.set_visible_child_name("diagnostics")
 
     def do_shutdown(self):
         """Clean up D-Bus connection on application shutdown."""

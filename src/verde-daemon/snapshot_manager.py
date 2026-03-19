@@ -249,6 +249,7 @@ class SnapshotManager:
         operation_type: str,
         target_driver: str,
         user: str,
+        previous_version: str = "",
     ) -> dict:
         """Build the full snapshot data dict."""
         now = datetime.datetime.now(datetime.UTC)
@@ -263,6 +264,7 @@ class SnapshotManager:
             "operation": {
                 "type": operation_type,
                 "target_driver": target_driver,
+                "previous_version": previous_version,
                 "user": user,
             },
             "sha256": None,
@@ -338,6 +340,7 @@ class SnapshotManager:
         operation_type: str,
         target_driver: str,
         user: str,
+        previous_version: str = "",
     ) -> str:
         """Create a pre-operation snapshot. Returns the snapshot ID.
 
@@ -347,7 +350,13 @@ class SnapshotManager:
 
         snapshot_id = self._generate_snapshot_id(target_driver)
         try:
-            data = self._build_snapshot_data(snapshot_id, operation_type, target_driver, user)
+            data = self._build_snapshot_data(
+                snapshot_id,
+                operation_type,
+                target_driver,
+                user,
+                previous_version=previous_version,
+            )
 
             path = self._snapshot_dir / f"{snapshot_id}.json"
             content = json.dumps(data, indent=2, sort_keys=False)

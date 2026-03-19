@@ -32,6 +32,7 @@ from verde_daemon.degraded_states import (
 )
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
+from verde_daemon.pending_summary import PendingSummaryManager
 from verde_daemon.polkit import (
     METHOD_ACTION_MAP,
     PolkitAgentMissing,
@@ -152,6 +153,9 @@ class VerdeService:
         self._snapshot_manager = snapshot_manager or SnapshotManager(
             audit_logger=audit_logger,
         )
+
+        # Pending summary manager (Story 3.5)
+        self._pending_summary = PendingSummaryManager()
 
         # Degraded state tracking — re-detected each poll cycle
         self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
@@ -339,6 +343,16 @@ class VerdeService:
         if method_name == "Ping":
             self._on_idle_reset()
             invocation.return_value(None)
+            return
+
+        # Story 3.5: Post-reboot summary — no auth required (read/clear only)
+        if method_name == "GetPostRebootSummary":
+            self._on_idle_reset()
+            self._dispatch_get_post_reboot_summary(invocation)
+            return
+        if method_name == "ClearPostRebootSummary":
+            self._on_idle_reset()
+            self._dispatch_clear_post_reboot_summary(invocation)
             return
 
         # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
@@ -757,6 +771,47 @@ class VerdeService:
         invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("b", True)))
 
     # ------------------------------------------------------------------
+    # Story 3.5: Post-reboot summary
+    # ------------------------------------------------------------------
+
+    def _dispatch_get_post_reboot_summary(self, invocation: Gio.DBusMethodInvocation) -> None:
+        """Handle GetPostRebootSummary: return summary or has_pending=false."""
+        pending = self._pending_summary.read_pending()
+        if pending is None:
+            result = {"has_pending": GLib.Variant("b", False)}
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
+            return
+
+        summary = self._pending_summary.compute_post_reboot_summary(
+            pending,
+            self._nvml,
+        )
+        gv_result: dict[str, GLib.Variant] = {
+            "has_pending": GLib.Variant("b", True),
+            "operation_type": GLib.Variant("s", summary.get("operation_type", "")),
+            "previous_version": GLib.Variant("s", summary.get("previous_version", "")),
+            "expected_version": GLib.Variant("s", summary.get("expected_version", "")),
+            "current_version": GLib.Variant("s", summary.get("current_version", "")),
+            "gpu_healthy": GLib.Variant("b", summary.get("gpu_healthy", False)),
+            "result": GLib.Variant("s", summary.get("result", "failed")),
+            "message": GLib.Variant("s", summary.get("message", "")),
+            "recovery_guidance": GLib.Variant("s", summary.get("recovery_guidance", "")),
+        }
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", gv_result)))
+
+    def _dispatch_clear_post_reboot_summary(self, invocation: Gio.DBusMethodInvocation) -> None:
+        """Handle ClearPostRebootSummary: delete state file."""
+        self._pending_summary.clear_pending()
+        if self._audit:
+            self._audit.log(
+                "CLEAR_POST_REBOOT_SUMMARY",
+                {},
+                "gui",
+                "success",
+            )
+        invocation.return_value(None)
+
+    # ------------------------------------------------------------------
     # Rollback dispatch (Story 3.3)
     # ------------------------------------------------------------------
 
@@ -838,12 +893,36 @@ class VerdeService:
             def _on_progress(pct: float, msg: str) -> None:
                 self._emit_signal("OperationProgress", "(sds)", (op_id, pct, msg))
 
+            # Capture current driver version before restore (Story 3.5)
+            _prev_driver = str(self._nvml.get_driver_version()) if self._nvml_available else ""
+
+            # Read snapshot data before restore to extract expected version
+            snap_data = self._snapshot_manager.get_snapshot(snapshot_id)
+            expected_ver = ""
+            if snap_data:
+                op_info = snap_data.get("operation", {})
+                if isinstance(op_info, dict):
+                    # previous_version is the driver that was running when the
+                    # snapshot was taken — that's what we expect after rollback.
+                    expected_ver = op_info.get("previous_version", "")
+
             # Execute restore
             success, message = self._snapshot_manager.restore(
                 snapshot_id, progress_callback=_on_progress
             )
 
             if success:
+                # Write pending summary for post-reboot display (Story 3.5, AC#1)
+                try:
+                    self._pending_summary.write_pending(
+                        "rollback",
+                        _prev_driver,
+                        expected_ver,
+                        op_id,
+                    )
+                except Exception as exc:
+                    log.warning("Failed to write pending summary: %s", exc)
+
                 self._emit_signal("OperationComplete", "(sbs)", (op_id, True, message))
                 self._emit_signal(
                     "RebootRequired",
@@ -1004,12 +1083,26 @@ class VerdeService:
             # Snapshot stub (Story 3.1 will provide real implementation)
             self._create_pre_install_snapshot(version)
 
+            # Capture current driver version before install (Story 3.5)
+            _prev_driver = str(self._nvml.get_driver_version()) if self._nvml_available else ""
+
             # Run APT install with progress
             success, message, returncode, timed_out = self._run_apt_install(op_id, version)
 
             if success:
                 # Remove operation marker on success
                 remove_operation_marker()
+
+                # Write pending summary for post-reboot display (Story 3.5, AC#1)
+                try:
+                    self._pending_summary.write_pending(
+                        "install",
+                        _prev_driver,
+                        version,
+                        op_id,
+                    )
+                except Exception as exc:
+                    log.warning("Failed to write pending summary: %s", exc)
 
                 # Emit completion signals
                 self._emit_signal("OperationComplete", "(sbs)", (op_id, True, message))
@@ -1451,7 +1544,13 @@ class VerdeService:
     def _create_pre_install_snapshot(self, version: str) -> None:
         """Create pre-install snapshot before driver operations."""
         try:
-            sid = self._snapshot_manager.create_snapshot("driver_install", version, "system")
+            prev_ver = str(self._nvml.get_driver_version()) if self._nvml_available else ""
+            sid = self._snapshot_manager.create_snapshot(
+                "driver_install",
+                version,
+                "system",
+                previous_version=prev_ver,
+            )
             log.info("Pre-install snapshot created: %s", sid)
         except Exception as exc:
             log.warning("Failed to create pre-install snapshot: %s", exc)

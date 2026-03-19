@@ -16,6 +16,7 @@ daemon_sources = [
   'degraded_states.py',
   'driver_manager.py',
   'nvml_wrapper.py',
+  'pending_summary.py',
   'polkit.py',
   'preflight.py',
   'service.py',

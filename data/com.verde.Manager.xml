@@ -62,6 +62,12 @@
       <arg name="state_info" type="a{sv}" direction="out"/>
     </method>
 
+    <!-- Story 3.5: Post-reboot summary -->
+    <method name="GetPostRebootSummary">
+      <arg name="summary" type="a{sv}" direction="out"/>
+    </method>
+    <method name="ClearPostRebootSummary"/>
+
     <!-- Signals -->
     <signal name="DegradedStateChanged">
       <arg name="state_info" type="a{sv}"/>
