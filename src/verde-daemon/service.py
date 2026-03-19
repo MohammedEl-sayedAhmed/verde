@@ -40,6 +40,7 @@ from verde_daemon.polkit import (
     PolkitTimeout,
     check_authorization,
 )
+from verde_daemon.power_manager import PowerManager
 from verde_daemon.preflight import PreflightChecker
 from verde_daemon.snapshot_manager import SnapshotManager
 from verde_daemon.validators import (
@@ -156,6 +157,9 @@ class VerdeService:
 
         # Pending summary manager (Story 3.5)
         self._pending_summary = PendingSummaryManager()
+
+        # Power manager (Story 4.1)
+        self._power_manager = PowerManager()
 
         # Degraded state tracking — re-detected each poll cycle
         self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
@@ -353,6 +357,12 @@ class VerdeService:
         if method_name == "ClearPostRebootSummary":
             self._on_idle_reset()
             self._dispatch_clear_post_reboot_summary(invocation)
+            return
+
+        # Story 4.1: Power status — no auth required (read-only monitoring)
+        if method_name == "GetPowerStatus":
+            self._on_idle_reset()
+            self._dispatch_get_power_status(invocation)
             return
 
         # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
@@ -810,6 +820,48 @@ class VerdeService:
                 "success",
             )
         invocation.return_value(None)
+
+    # ------------------------------------------------------------------
+    # Power status dispatch (Story 4.1)
+    # ------------------------------------------------------------------
+
+    def _dispatch_get_power_status(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle GetPowerStatus: return power/suspend issue detection results."""
+        try:
+            status = self._power_manager.get_power_status()
+
+            # Convert issues list to aa{sv}
+            gv_issues = []
+            for issue in status["issues"]:
+                gv_issue = {
+                    "type": GLib.Variant("s", issue["type"]),
+                    "severity": GLib.Variant("s", issue["severity"]),
+                    "summary": GLib.Variant("s", issue["summary"]),
+                    "detail": GLib.Variant("s", issue["detail"]),
+                    "fixable": GLib.Variant("b", issue["fixable"]),
+                    "already_fixed": GLib.Variant("b", issue["already_fixed"]),
+                }
+                gv_issues.append(GLib.Variant("a{sv}", gv_issue))
+
+            gv_result = {
+                "overall_status": GLib.Variant("s", status["overall_status"]),
+                "issues": GLib.Variant("aa{sv}", gv_issues),
+                "suspend_service_active": GLib.Variant("b", status["suspend_service_active"]),
+                "hibernate_service_active": GLib.Variant("b", status["hibernate_service_active"]),
+                "secure_boot_enabled": GLib.Variant("b", status["secure_boot_enabled"]),
+                "mok_enrolled": GLib.Variant("b", status["mok_enrolled"]),
+                "wayland_session": GLib.Variant("b", status["wayland_session"]),
+            }
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", gv_result)))
+        except Exception:
+            log.exception("GetPowerStatus dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while retrieving power status.",
+            )
 
     # ------------------------------------------------------------------
     # Rollback dispatch (Story 3.3)

@@ -18,6 +18,7 @@ daemon_sources = [
   'nvml_wrapper.py',
   'pending_summary.py',
   'polkit.py',
+  'power_manager.py',
   'preflight.py',
   'service.py',
   'snapshot_manager.py',
