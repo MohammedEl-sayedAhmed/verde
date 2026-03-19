@@ -143,10 +143,10 @@ class TestPolkitIntegration:
         idle_reset.assert_called_once()
 
     @patch("service.check_authorization", return_value=True)
-    def test_read_only_method_uses_monitor_action(
+    def test_read_only_method_bypasses_polkit(
         self, mock_auth, service, mock_invocation, mock_connection
     ):
-        """GetGPUInfo triggers com.verde.monitor action check."""
+        """GetGPUInfo bypasses Polkit — no auth check needed."""
         service._on_bus_acquired(mock_connection, "com.verde.Manager")
 
         service._handle_method_call(
@@ -158,7 +158,7 @@ class TestPolkitIntegration:
             None,
             mock_invocation,
         )
-        mock_auth.assert_called_once_with(mock_connection, ":1.42", "com.verde.monitor")
+        mock_auth.assert_not_called()
 
     @patch("service.check_authorization", return_value=True)
     def test_authorized_method_resets_idle(

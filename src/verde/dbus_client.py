@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import typing
 from typing import TYPE_CHECKING, ClassVar
 
@@ -60,8 +61,11 @@ class VerdeDBusClient(GObject.Object):
 
     def connect_async(self) -> None:
         """Initiate async connection to the Verde daemon on the system bus."""
+        bus_type = (
+            Gio.BusType.SESSION if os.environ.get("VERDE_USE_SESSION_BUS") else Gio.BusType.SYSTEM
+        )
         Gio.DBusProxy.new_for_bus(
-            Gio.BusType.SYSTEM,
+            bus_type,
             Gio.DBusProxyFlags.NONE,
             None,  # interface info
             BUS_NAME,

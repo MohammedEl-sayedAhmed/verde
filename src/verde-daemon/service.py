@@ -365,10 +365,18 @@ class VerdeService:
             self._dispatch_clear_post_reboot_summary(invocation)
             return
 
-        # Story 4.1: Power status — no auth required (read-only monitoring)
+        # Read-only methods — no Polkit auth required
+        if method_name in _GPU_DATA_METHODS:
+            self._on_idle_reset()
+            self._dispatch_gpu_method(method_name, invocation)
+            return
         if method_name == "GetPowerStatus":
             self._on_idle_reset()
             self._dispatch_get_power_status(invocation)
+            return
+        if method_name == "ListSnapshots":
+            self._on_idle_reset()
+            self._dispatch_list_snapshots(invocation)
             return
 
         # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
@@ -512,7 +520,11 @@ class VerdeService:
             elif method_name == "GetDegradedState":
                 result = self._build_degraded_state_response()
             elif method_name == "ListAvailableDrivers":
-                self._dispatch_list_available_drivers(invocation)
+                threading.Thread(
+                    target=self._dispatch_list_available_drivers_threaded,
+                    args=(invocation,),
+                    daemon=True,
+                ).start()
                 return
             else:
                 invocation.return_dbus_error(
@@ -865,9 +877,10 @@ class VerdeService:
                 }
                 gv_issues.append(GLib.Variant("a{sv}", gv_issue))
 
+            issues_array = GLib.Variant.new_array(GLib.VariantType.new("a{sv}"), gv_issues)
             gv_result = {
                 "overall_status": GLib.Variant("s", status["overall_status"]),
-                "issues": GLib.Variant("aa{sv}", gv_issues),
+                "issues": issues_array,
                 "suspend_service_active": GLib.Variant("b", status["suspend_service_active"]),
                 "hibernate_service_active": GLib.Variant("b", status["hibernate_service_active"]),
                 "secure_boot_enabled": GLib.Variant("b", status["secure_boot_enabled"]),
@@ -2058,6 +2071,22 @@ class VerdeService:
 
         return result
 
+    def _dispatch_list_available_drivers_threaded(
+        self, invocation: Gio.DBusMethodInvocation
+    ) -> None:
+        """Thread wrapper for ListAvailableDrivers — replies via GLib.idle_add."""
+        try:
+            data = self._driver_manager.list_available_drivers()
+        except Exception as exc:
+            log.exception("DriverManager.list_available_drivers failed")
+            GLib.idle_add(
+                invocation.return_dbus_error,
+                "com.verde.Error.AptUnavailable",
+                str(exc),
+            )
+            return
+        self._finish_list_available_drivers(data, invocation, threaded=True)
+
     def _dispatch_list_available_drivers(self, invocation: Gio.DBusMethodInvocation) -> None:
         """Handle ListAvailableDrivers — returns aa{sv}."""
         try:
@@ -2069,7 +2098,16 @@ class VerdeService:
                 str(exc),
             )
             return
+        self._finish_list_available_drivers(data, invocation, threaded=False)
 
+    def _finish_list_available_drivers(
+        self,
+        data: dict,
+        invocation: Gio.DBusMethodInvocation,
+        *,
+        threaded: bool = False,
+    ) -> None:
+        """Build and return the ListAvailableDrivers response."""
         driver_variants: list[dict[str, GLib.Variant]] = []
         for d in data.get("drivers", []):
             dv: dict[str, GLib.Variant] = {
@@ -2102,13 +2140,15 @@ class VerdeService:
         if data.get("run_file_message"):
             meta["run_file_message"] = GLib.Variant("s", data["run_file_message"])
 
-        # Return (aa{sv}a{sv}) — drivers array + metadata dict
-        invocation.return_value(
-            GLib.Variant.new_tuple(
-                GLib.Variant("aa{sv}", driver_variants),
-                GLib.Variant("a{sv}", meta),
-            )
+        # Return (aa{sv}a{sv}) -- drivers array + metadata dict
+        reply = GLib.Variant.new_tuple(
+            GLib.Variant("aa{sv}", driver_variants),
+            GLib.Variant("a{sv}", meta),
         )
+        if threaded:
+            GLib.idle_add(invocation.return_value, reply)
+        else:
+            invocation.return_value(reply)
 
     def _build_degraded_state_response(self) -> dict[str, GLib.Variant]:
         """Build GetDegradedState response from current state."""

@@ -542,7 +542,8 @@ class TestListAvailableDriversDbus:
             "run_file_message": "",
         }
         svc = _make_service(mock_dm=dm)
-        inv = _call_method(svc, "ListAvailableDrivers")
+        inv = MagicMock()
+        svc._dispatch_list_available_drivers(inv)
         inv.return_value.assert_called_once()
         # Verify the variant was constructed (return_value called with GLib.Variant)
         args = inv.return_value.call_args[0][0]
@@ -558,7 +559,8 @@ class TestListAvailableDriversDbus:
         dm = MagicMock()
         dm.list_available_drivers.side_effect = RuntimeError("apt broken")
         svc = _make_service(mock_dm=dm)
-        inv = _call_method(svc, "ListAvailableDrivers")
+        inv = MagicMock()
+        svc._dispatch_list_available_drivers(inv)
         inv.return_dbus_error.assert_called_once()
         error_name = inv.return_dbus_error.call_args[0][0]
         assert error_name == "com.verde.Error.AptUnavailable"

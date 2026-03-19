@@ -19,16 +19,10 @@ METHOD_ACTION_MAP: dict[str, str] = {
     "InstallDriver": "com.verde.driver.manage",
     "RollbackDriver": "com.verde.driver.manage",
     "RepairDpkg": "com.verde.driver.manage",
-    "ListSnapshots": "com.verde.driver.manage",
     "DeleteSnapshot": "com.verde.driver.manage",
     "FixSuspend": "com.verde.power.manage",
     "FixHibernate": "com.verde.power.manage",
     "GenerateDiagnosticReport": "com.verde.diagnostics",
-    "GetGPUInfo": "com.verde.monitor",
-    "GetGPUStats": "com.verde.monitor",
-    "GetCurrentDriver": "com.verde.monitor",
-    "ListAvailableDrivers": "com.verde.monitor",
-    "GetPowerStatus": "com.verde.monitor",
 }
 
 

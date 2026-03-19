@@ -26,16 +26,10 @@ class TestMethodActionMap:
         "InstallDriver",
         "RollbackDriver",
         "RepairDpkg",
-        "ListSnapshots",
         "DeleteSnapshot",
         "FixSuspend",
         "FixHibernate",
         "GenerateDiagnosticReport",
-        "GetGPUInfo",
-        "GetGPUStats",
-        "GetCurrentDriver",
-        "ListAvailableDrivers",
-        "GetPowerStatus",
     }
 
     def test_all_methods_mapped(self):
@@ -45,7 +39,6 @@ class TestMethodActionMap:
         assert METHOD_ACTION_MAP["InstallDriver"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["RollbackDriver"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["RepairDpkg"] == "com.verde.driver.manage"
-        assert METHOD_ACTION_MAP["ListSnapshots"] == "com.verde.driver.manage"
         assert METHOD_ACTION_MAP["DeleteSnapshot"] == "com.verde.driver.manage"
 
     def test_power_methods_map_to_power_manage(self):
@@ -55,16 +48,18 @@ class TestMethodActionMap:
     def test_diagnostics_method_maps_to_diagnostics(self):
         assert METHOD_ACTION_MAP["GenerateDiagnosticReport"] == "com.verde.diagnostics"
 
-    def test_monitor_methods_map_to_monitor(self):
-        monitor_methods = [
+    def test_read_only_methods_bypass_polkit(self):
+        """Read-only methods (GPU data, power status, snapshots) are not in the map."""
+        read_only = [
             "GetGPUInfo",
             "GetGPUStats",
             "GetCurrentDriver",
             "ListAvailableDrivers",
             "GetPowerStatus",
+            "ListSnapshots",
         ]
-        for method in monitor_methods:
-            assert METHOD_ACTION_MAP[method] == "com.verde.monitor"
+        for method in read_only:
+            assert method not in METHOD_ACTION_MAP
 
 
 # ===================================================================

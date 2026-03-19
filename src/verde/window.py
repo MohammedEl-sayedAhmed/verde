@@ -84,7 +84,7 @@ if _has_ui_resource():
                 width = self.get_width()
                 height = self.get_height()
                 self._settings.set_value("window-size", GLib.Variant("(ii)", (width, height)))
-            return super().do_close_request()
+            return False
 
         def _load_css(self):
             css_provider = Gtk.CssProvider()
@@ -168,7 +168,7 @@ else:
                 width = self.get_width()
                 height = self.get_height()
                 self._settings.set_value("window-size", GLib.Variant("(ii)", (width, height)))
-            return super().do_close_request()
+            return False
 
 
 class VerdeApplication(Adw.Application):

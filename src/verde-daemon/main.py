@@ -6,6 +6,7 @@ Exits after idle timeout when no operations are in progress.
 """
 
 import logging
+import os
 import signal
 import sys
 
@@ -101,7 +102,7 @@ def main() -> int:
 
     audit_logger = AuditLogger()
 
-    xml_path = "@pkgdatadir@/com.verde.Manager.xml"
+    xml_path = os.environ.get("VERDE_DATA_DIR", "@pkgdatadir@") + "/com.verde.Manager.xml"
     service = VerdeService(
         loop=loop,
         on_idle_reset=idle_timer.reset,

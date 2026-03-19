@@ -22,6 +22,9 @@ subprojects/
 *.swp
 *.swo
 
+# Dev symlinks
+src/verde_daemon
+
 # OS
 .DS_Store
 Thumbs.db
