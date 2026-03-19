@@ -271,7 +271,7 @@ class VerdeApplication(Adw.Application):
         """Show the post-reboot summary dialog on the main thread."""
         win = self.props.active_window
         if win is None:
-            return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         if result_str == "success":
             heading = _("Operation Complete")
@@ -299,7 +299,7 @@ class VerdeApplication(Adw.Application):
 
         dialog.connect("response", self._on_post_reboot_response)
         dialog.present()
-        return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _on_post_reboot_response(self, dialog: Adw.MessageDialog, response: str) -> None:
         """Handle post-reboot dialog response — clear state and navigate."""
