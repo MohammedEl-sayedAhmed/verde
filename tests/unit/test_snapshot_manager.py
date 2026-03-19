@@ -586,6 +586,149 @@ class TestDeleteSnapshotAudit:
             mgr.delete_snapshot("../../../etc/passwd")
 
 
+# ===================================================================
+# Story 3.3: snapshot_manager.restore()
+# ===================================================================
+
+
+def _create_valid_snapshot(snap_dir, packages=None):
+    """Helper: create a snapshot with valid SHA-256 for restore tests."""
+    from snapshot_manager import _compute_sha256
+
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    sid = "20260318T143000_nvidia-560-ab01"
+    data = {
+        "schema_version": 1,
+        "snapshot_id": sid,
+        "timestamp": "2026-03-18T14:30:00+00:00",
+        "driver_packages": packages
+        or [
+            {"name": "nvidia-driver-560", "version": "560.35.03", "architecture": "amd64"},
+        ],
+        "kernel_version": "6.8.0-45-generic",
+        "dkms_modules": [],
+        "config_files": {},
+        "operation": {"type": "driver_install", "target_driver": "560", "user": "u"},
+        "sha256": None,
+    }
+    data["sha256"] = _compute_sha256(data)
+    (snap_dir / f"{sid}.json").write_text(json.dumps(data))
+    return sid, data
+
+
+class TestRestore:
+    def test_restore_with_valid_snapshot(self, tmp_path):
+        """restore() calls apt-get remove + install for changed packages."""
+        snap_dir = tmp_path / "snapshots"
+        sid, _ = _create_valid_snapshot(snap_dir)
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+
+        with (
+            patch(
+                "snapshot_manager._query_nvidia_packages",
+                return_value=[
+                    {"name": "nvidia-driver-565", "version": "565.57", "architecture": "amd64"},
+                ],
+            ),
+            patch.object(SnapshotManager, "_run_apt", return_value=(True, "")) as mock_apt,
+            patch("subprocess.run"),  # mock update-initramfs
+        ):
+            success, msg = mgr.restore(sid)
+
+        assert success is True
+        assert "Rolled back" in msg
+        # Should have called apt for remove (nvidia-driver-565) and install (nvidia-driver-560=560.35.03)
+        assert mock_apt.call_count == 2
+
+    def test_restore_integrity_failure(self, tmp_path):
+        """restore() returns failure if SHA-256 doesn't match."""
+        snap_dir = tmp_path / "snapshots"
+        sid, _ = _create_valid_snapshot(snap_dir)
+
+        # Tamper with the file
+        path = snap_dir / f"{sid}.json"
+        data = json.loads(path.read_text())
+        data["kernel_version"] = "TAMPERED"
+        path.write_text(json.dumps(data))
+
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+        success, msg = mgr.restore(sid)
+        assert success is False
+        assert "integrity" in msg.lower()
+
+    def test_restore_missing_snapshot(self, tmp_path):
+        """restore() raises FileNotFoundError for missing snapshot."""
+        mgr = SnapshotManager(snapshot_dir=tmp_path / "snapshots")
+        with pytest.raises(FileNotFoundError):
+            mgr.restore("20260318T143000_nvidia-560-ab01")
+
+    def test_restore_invalid_id(self, tmp_path):
+        """restore() raises InvalidSnapshotId for malformed IDs."""
+        mgr = SnapshotManager(snapshot_dir=tmp_path / "snapshots")
+        with pytest.raises(InvalidSnapshotId):
+            mgr.restore("../../../etc/passwd")
+
+    def test_restore_no_changes_needed(self, tmp_path):
+        """restore() reports no changes when system matches snapshot."""
+        snap_dir = tmp_path / "snapshots"
+        sid, data = _create_valid_snapshot(snap_dir)
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+
+        with patch(
+            "snapshot_manager._query_nvidia_packages",
+            return_value=data["driver_packages"],
+        ):
+            success, msg = mgr.restore(sid)
+
+        assert success is True
+        assert "no changes" in msg.lower()
+
+    def test_restore_apt_remove_failure(self, tmp_path):
+        """restore() returns failure when apt-get remove fails."""
+        snap_dir = tmp_path / "snapshots"
+        sid, _ = _create_valid_snapshot(snap_dir)
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+
+        with (
+            patch(
+                "snapshot_manager._query_nvidia_packages",
+                return_value=[
+                    {"name": "nvidia-driver-565", "version": "565.57", "architecture": "amd64"},
+                ],
+            ),
+            patch.object(SnapshotManager, "_run_apt", return_value=(False, "dpkg locked")),
+        ):
+            success, msg = mgr.restore(sid)
+
+        assert success is False
+        assert "remove" in msg.lower()
+
+    def test_restore_progress_callback(self, tmp_path):
+        """restore() calls progress_callback at various stages."""
+        snap_dir = tmp_path / "snapshots"
+        sid, _ = _create_valid_snapshot(snap_dir)
+        mgr = SnapshotManager(snapshot_dir=snap_dir)
+
+        progress_calls = []
+
+        with (
+            patch(
+                "snapshot_manager._query_nvidia_packages",
+                return_value=[
+                    {"name": "nvidia-driver-565", "version": "565.57", "architecture": "amd64"},
+                ],
+            ),
+            patch.object(SnapshotManager, "_run_apt", return_value=(True, "")),
+            patch("subprocess.run"),
+        ):
+            mgr.restore(sid, progress_callback=lambda pct, msg: progress_calls.append((pct, msg)))
+
+        assert len(progress_calls) >= 4
+        # First call should be low percentage, last should be 100
+        assert progress_calls[0][0] < 20
+        assert progress_calls[-1][0] == 100.0
+
+
 class TestAuditOnFailure:
     def test_audit_logged_on_snapshot_failure(self, tmp_path):
         """Audit log records failure when snapshot creation crashes."""

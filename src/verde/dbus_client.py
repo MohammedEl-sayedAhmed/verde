@@ -257,3 +257,17 @@ class VerdeDBusClient(GObject.Object):
             GLib.Variant("(s)", (snapshot_id,)),
             callback,
         )
+
+    # ── Rollback methods (Story 3.3) ───────────────────────────────
+
+    def rollback_driver(
+        self,
+        snapshot_id: str,
+        callback: typing.Callable[..., typing.Any] | None = None,
+    ) -> None:
+        """Initiate driver rollback to a snapshot via D-Bus asynchronously."""
+        self.call_method_async(
+            "RollbackDriver",
+            GLib.Variant("(s)", (snapshot_id,)),
+            callback,
+        )

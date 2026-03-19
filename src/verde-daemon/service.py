@@ -23,7 +23,7 @@ from verde_daemon.apt_errors import (
     remove_operation_marker,
     write_operation_marker,
 )
-from verde_daemon.audit import OP_INSTALL_DRIVER, AuditLogger
+from verde_daemon.audit import OP_INSTALL_DRIVER, OP_ROLLBACK_DRIVER, AuditLogger
 from verde_daemon.degraded_states import (
     DegradedState,
     build_state_info,
@@ -438,6 +438,11 @@ class VerdeService:
             self._dispatch_install_driver(parameters, invocation, sender)
             return
 
+        # Rollback dispatch (Story 3.3)
+        if method_name == "RollbackDriver":
+            self._dispatch_rollback_driver(parameters, invocation, sender)
+            return
+
         # Snapshot management (Story 3.2)
         if method_name == "ListSnapshots":
             self._dispatch_list_snapshots(invocation)
@@ -499,6 +504,12 @@ class VerdeService:
         """Run pre-flight checks and return structured a{sv} result."""
         try:
             operation = parameters.get_child_value(0).get_string()
+
+            # Rollback-specific pre-flight (Story 3.3)
+            if operation.startswith("rollback:"):
+                self._dispatch_rollback_preflight(operation, invocation)
+                return
+
             pf_result = self._preflight.run_all_checks(operation)
 
             check_variants: list[dict[str, GLib.Variant]] = []
@@ -521,6 +532,163 @@ class VerdeService:
         except Exception as exc:
             log.exception("Internal error in GetPreflightCheck")
             invocation.return_dbus_error("com.verde.Manager.InternalError", str(exc))
+
+    def _dispatch_rollback_preflight(
+        self,
+        operation: str,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Run rollback-specific pre-flight checks (AC#2)."""
+        try:
+            self._dispatch_rollback_preflight_inner(operation, invocation)
+        except Exception:
+            log.exception("Unhandled error in rollback preflight")
+            invocation.return_dbus_error("com.verde.Manager.InternalError", "Internal error")
+
+    def _dispatch_rollback_preflight_inner(
+        self,
+        operation: str,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Inner implementation of rollback pre-flight checks."""
+        from verde_daemon.preflight import CheckResult
+
+        snapshot_id = operation.split(":", 1)[1]
+        start = time.monotonic()
+        checks: list[CheckResult] = []
+        current_driver = ""
+        snapshot_driver = ""
+
+        # Check 1: Snapshot exists and integrity passes
+        try:
+            integrity_ok = self._snapshot_manager.verify_integrity(snapshot_id)
+            if integrity_ok:
+                checks.append(
+                    CheckResult(
+                        name="snapshot_integrity",
+                        status="pass",
+                        description="Snapshot integrity verified (SHA-256 match)",
+                    )
+                )
+            else:
+                checks.append(
+                    CheckResult(
+                        name="snapshot_integrity",
+                        status="fail",
+                        description="Snapshot integrity check failed — file may be corrupted",
+                    )
+                )
+        except FileNotFoundError:
+            checks.append(
+                CheckResult(
+                    name="snapshot_integrity",
+                    status="fail",
+                    description=f"Snapshot {snapshot_id!r} not found",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                CheckResult(
+                    name="snapshot_integrity",
+                    status="fail",
+                    description=f"Cannot verify snapshot: {exc}",
+                )
+            )
+
+        # Load snapshot data for remaining checks
+        snapshot_data = None
+        try:
+            snapshot_data = self._snapshot_manager.get_snapshot(snapshot_id)
+            op = snapshot_data.get("operation") or {}
+            if isinstance(op, dict):
+                snapshot_driver = op.get("target_driver", "")
+        except Exception:
+            pass
+
+        # Get current driver version
+        try:
+            driver_info = self._driver_manager.get_current_driver()
+            current_driver = driver_info.get("version", "")
+        except Exception:
+            pass
+
+        # Check 2: Disk space
+        checks.append(self._preflight._check_disk_space())
+
+        # Check 3: Package availability (snapshot packages exist in repos)
+        if snapshot_data:
+            snap_pkgs = snapshot_data.get("driver_packages", [])
+            missing = []
+            for pkg in snap_pkgs:
+                name = pkg.get("name", "")
+                version = pkg.get("version", "")
+                if name and version:
+                    try:
+                        result = subprocess.run(
+                            ["apt-cache", "show", f"{name}={version}"],
+                            capture_output=True,
+                            text=True,
+                            timeout=10,
+                        )
+                        if result.returncode != 0:
+                            missing.append(f"{name}={version}")
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        missing.append(f"{name}={version}")
+
+            if missing:
+                checks.append(
+                    CheckResult(
+                        name="package_availability",
+                        status="fail",
+                        description=(
+                            "Required packages unavailable: "
+                            + ", ".join(missing[:3])
+                            + (f" (+{len(missing) - 3} more)" if len(missing) > 3 else "")
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    CheckResult(
+                        name="package_availability",
+                        status="pass",
+                        description="All snapshot packages are available",
+                    )
+                )
+        else:
+            checks.append(
+                CheckResult(
+                    name="package_availability",
+                    status="warn",
+                    description="Cannot verify package availability — snapshot data unavailable",
+                )
+            )
+
+        # Check 4: dpkg state
+        checks.append(self._preflight._check_dpkg_state())
+
+        duration_ms = int((time.monotonic() - start) * 1000)
+        overall_pass = all(c.status != "fail" for c in checks)
+
+        check_variants: list[dict[str, GLib.Variant]] = []
+        for c in checks:
+            check_variants.append(
+                {
+                    "name": GLib.Variant("s", c.name),
+                    "status": GLib.Variant("s", c.status),
+                    "description": GLib.Variant("s", c.description),
+                }
+            )
+
+        result_dict: dict[str, GLib.Variant] = {
+            "overall_pass": GLib.Variant("b", overall_pass),
+            "duration_ms": GLib.Variant("i", duration_ms),
+            "checks": GLib.Variant("aa{sv}", check_variants),
+            "current_driver": GLib.Variant("s", current_driver),
+            "snapshot_driver": GLib.Variant("s", snapshot_driver),
+        }
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result_dict)))
 
     # ------------------------------------------------------------------
     # Snapshot management dispatch (Story 3.2)
@@ -587,6 +755,170 @@ class VerdeService:
                 "success",
             )
         invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("b", True)))
+
+    # ------------------------------------------------------------------
+    # Rollback dispatch (Story 3.3)
+    # ------------------------------------------------------------------
+
+    def _dispatch_rollback_driver(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle RollbackDriver: validate, guard, return op_id, spawn worker."""
+        snapshot_id = parameters.get_child_value(0).get_string()
+
+        # Concurrency guard (FR40)
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                self._operation_in_progress_message(),
+            )
+            return
+
+        # Check dpkg lock before starting
+        lock_error = detect_dpkg_lock()
+        if lock_error is not None:
+            dbus_dict = lock_error.to_dbus_dict()
+            invocation.return_dbus_error(
+                "com.verde.Error.DpkgLocked",
+                dbus_dict["error_title"] + ": " + dbus_dict["error_description"],
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_ROLLBACK_DRIVER,
+                    {"snapshot_id": snapshot_id},
+                    sender,
+                    "blocked",
+                    error="dpkg lock held",
+                )
+            return
+
+        # Acquire guard and generate op_id
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+        self._current_op_type = "RollbackDriver"
+        self._current_op_started = time.monotonic()
+
+        # Return op_id immediately
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        # Spawn worker thread
+        thread = threading.Thread(
+            target=self._do_rollback,
+            args=(op_id, snapshot_id, sender),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_rollback(self, op_id: str, snapshot_id: str, sender: str) -> None:
+        """Worker thread: hold timer, inhibit, restore snapshot, signals, audit."""
+        inhibitor_fd: int | None = None
+        try:
+            GLib.idle_add(self._on_idle_hold)
+
+            # Audit: operation started
+            if self._audit:
+                self._audit.log(
+                    OP_ROLLBACK_DRIVER,
+                    {"snapshot_id": snapshot_id},
+                    sender,
+                    "started",
+                )
+
+            # Acquire systemd inhibitor lock
+            inhibitor_fd = self._acquire_inhibitor_lock(f"Rolling back to snapshot {snapshot_id}")
+
+            # Write operation marker for interrupted operation detection
+            write_operation_marker("rollback_driver", snapshot_id)
+
+            # Progress callback emits OperationProgress signals
+            def _on_progress(pct: float, msg: str) -> None:
+                self._emit_signal("OperationProgress", "(sds)", (op_id, pct, msg))
+
+            # Execute restore
+            success, message = self._snapshot_manager.restore(
+                snapshot_id, progress_callback=_on_progress
+            )
+
+            if success:
+                self._emit_signal("OperationComplete", "(sbs)", (op_id, True, message))
+                self._emit_signal(
+                    "RebootRequired",
+                    "(bs)",
+                    (True, "Restart required to complete driver rollback"),
+                )
+
+                if self._audit:
+                    self._audit.log(
+                        OP_ROLLBACK_DRIVER,
+                        {"snapshot_id": snapshot_id},
+                        sender,
+                        "success",
+                    )
+            else:
+                error_dict = {
+                    "success": False,
+                    "error_category": "rollback_failed",
+                    "error_title": "Rollback Failed",
+                    "error_description": message,
+                    "error_primary_action": "Try a different snapshot or generate a diagnostic report",
+                    "error_secondary_action": "",
+                    "recoverable": True,
+                }
+                self._emit_signal(
+                    "OperationComplete",
+                    "(sbs)",
+                    (op_id, False, json.dumps(error_dict)),
+                )
+                if self._audit:
+                    self._audit.log(
+                        OP_ROLLBACK_DRIVER,
+                        {"snapshot_id": snapshot_id},
+                        sender,
+                        "failed",
+                        error=message,
+                    )
+
+        except Exception as exc:
+            log.exception("Unhandled error in rollback worker for %s", op_id)
+            error_dict = {
+                "success": False,
+                "error_category": "rollback_failed",
+                "error_title": "Rollback Failed",
+                "error_description": "An unexpected error occurred during rollback",
+                "error_primary_action": "Try a different snapshot or generate a diagnostic report",
+                "error_secondary_action": "",
+                "recoverable": True,
+            }
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                (op_id, False, json.dumps(error_dict)),
+            )
+            if self._audit:
+                self._audit.log(
+                    OP_ROLLBACK_DRIVER,
+                    {"snapshot_id": snapshot_id},
+                    sender,
+                    "failed",
+                    error=str(exc),
+                )
+        finally:
+            remove_operation_marker()
+            self._release_inhibitor_lock(inhibitor_fd)
+
+            def _release_guard() -> bool:
+                self._operation_in_progress = False
+                self._current_op_id = None
+                self._current_op_type = None
+                self._current_op_started = None
+                self._on_idle_release()
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_release_guard)
 
     # ------------------------------------------------------------------
     # Driver operation dispatch (InstallDriver)

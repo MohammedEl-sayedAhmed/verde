@@ -20,6 +20,7 @@ import pathlib
 import re
 import subprocess
 import uuid
+from collections.abc import Callable
 
 log = logging.getLogger("verde-daemon.snapshot")
 
@@ -426,6 +427,152 @@ class SnapshotManager:
         _validate_snapshot_id(snapshot_id)
         path = self._snapshot_dir / f"{snapshot_id}.json"
         return verify_snapshot_integrity(path)
+
+    def restore(
+        self,
+        snapshot_id: str,
+        progress_callback: Callable[[float, str], None] | None = None,
+    ) -> tuple[bool, str]:
+        """Restore system to snapshot state.
+
+        Parameters
+        ----------
+        snapshot_id : str
+            ID of the snapshot to restore.
+        progress_callback : callable | None
+            Called with ``(percent: float, message: str)`` at each stage.
+
+        Returns
+        -------
+        tuple[bool, str]
+            ``(success, message)`` — success flag and descriptive message.
+
+        Raises
+        ------
+        InvalidSnapshotId
+            If the snapshot ID format is invalid.
+        FileNotFoundError
+            If the snapshot file does not exist.
+        """
+        _validate_snapshot_id(snapshot_id)
+        path = self._snapshot_dir / f"{snapshot_id}.json"
+
+        def _progress(pct: float, msg: str) -> None:
+            if progress_callback is not None:
+                with contextlib.suppress(Exception):
+                    progress_callback(pct, msg)
+
+        # Stage 1: Load snapshot
+        _progress(5.0, "Loading snapshot data…")
+        try:
+            with open(path) as f:
+                snapshot_data = json.load(f)
+        except FileNotFoundError:
+            raise
+        except (OSError, json.JSONDecodeError) as exc:
+            return (False, f"Cannot read snapshot file: {exc}")
+
+        # Stage 2: Verify integrity
+        _progress(10.0, "Verifying snapshot integrity…")
+        if not verify_snapshot_integrity(path):
+            return (False, "Snapshot integrity check failed — SHA-256 mismatch")
+
+        # Stage 3: Determine package changes
+        _progress(15.0, "Calculating package changes…")
+        snapshot_packages = snapshot_data.get("driver_packages", [])
+        current_packages = _query_nvidia_packages()
+
+        # Build maps: name -> version
+        snap_pkg_map: dict[str, str] = {}
+        for p in snapshot_packages:
+            name = p.get("name", "")
+            version = p.get("version", "")
+            if name:
+                snap_pkg_map[name] = version
+
+        curr_pkg_map: dict[str, str] = {}
+        for p in current_packages:
+            name = p.get("name", "")
+            version = p.get("version", "")
+            if name:
+                curr_pkg_map[name] = version
+
+        to_remove = [name for name in curr_pkg_map if name not in snap_pkg_map]
+        to_install = [
+            f"{name}={version}"
+            for name, version in snap_pkg_map.items()
+            if name not in curr_pkg_map or curr_pkg_map[name] != version
+        ]
+
+        if not to_remove and not to_install:
+            return (True, "System already matches snapshot state — no changes needed")
+
+        # Stage 4: Remove extra packages
+        removed_packages: list[str] = []
+        if to_remove:
+            _progress(25.0, "Removing current driver packages…")
+            success, msg = self._run_apt(["apt-get", "remove", "-y", *to_remove])
+            if not success:
+                return (False, f"Failed to remove packages: {msg}")
+            removed_packages = list(to_remove)
+
+        # Stage 5: Install snapshot packages
+        if to_install:
+            _progress(50.0, "Installing snapshot packages…")
+            success, msg = self._run_apt(["apt-get", "install", "-y", *to_install])
+            if not success:
+                # Best-effort recovery: reinstall removed packages
+                if removed_packages:
+                    log.warning("Install failed after remove — attempting recovery reinstall")
+                    _progress(60.0, "Recovering previously removed packages…")
+                    recover_ok, recover_msg = self._run_apt(
+                        ["apt-get", "install", "-y", *removed_packages]
+                    )
+                    if recover_ok:
+                        log.info("Recovery reinstall succeeded")
+                    else:
+                        log.error("Recovery reinstall failed: %s", recover_msg)
+                return (False, f"Failed to install packages: {msg}")
+
+        # Stage 6: Rebuild initramfs
+        _progress(85.0, "Rebuilding initramfs…")
+        try:
+            result = subprocess.run(
+                ["update-initramfs", "-u"],
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if result.returncode != 0:
+                log.warning("update-initramfs returned %d: %s", result.returncode, result.stderr)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            log.warning("update-initramfs skipped: %s", exc)
+
+        _progress(100.0, "Rollback complete")
+
+        target_driver = snapshot_data.get("operation", {}).get("target_driver", "unknown")
+        return (
+            True,
+            f"Rolled back to driver state from snapshot {snapshot_id} (driver {target_driver})",
+        )
+
+    @staticmethod
+    def _run_apt(cmd: list[str]) -> tuple[bool, str]:
+        """Run an apt command. Returns (success, error_message)."""
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if result.returncode == 0:
+                return (True, "")
+            return (False, result.stderr.strip() or f"apt exited with code {result.returncode}")
+        except subprocess.TimeoutExpired:
+            return (False, "Package operation timed out after 600 seconds")
+        except FileNotFoundError:
+            return (False, "apt-get not found")
 
     def delete_snapshot(self, snapshot_id: str) -> None:
         """Delete a snapshot file.

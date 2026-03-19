@@ -44,7 +44,7 @@ def build_snapshot_row(
     snapshot: dict,
     on_rollback_clicked: Callable | None = None,
     on_delete_clicked: Callable | None = None,
-) -> Adw.ExpanderRow:
+) -> tuple[Adw.ExpanderRow, Gtk.Button | None]:
     """Build an ExpanderRow for a single snapshot from D-Bus aa{sv} data.
 
     Parameters
@@ -59,8 +59,8 @@ def build_snapshot_row(
 
     Returns
     -------
-    Adw.ExpanderRow
-        Configured expander row ready to add to a PreferencesGroup.
+    tuple[Adw.ExpanderRow, Gtk.Button | None]
+        Configured expander row and rollback button reference (or None).
     """
     snapshot.get("id", "")
     timestamp = snapshot.get("timestamp", "")
@@ -144,4 +144,4 @@ def build_snapshot_row(
         hash_row.set_subtitle(sha256)
         row.add_row(hash_row)
 
-    return row
+    return row, rollback_btn

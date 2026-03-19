@@ -57,6 +57,7 @@ class DriversPage(Adw.PreferencesPage):
         self._gpu_state: GPUState | None = None
         self._driver_rows: list[Adw.ActionRow] = []
         self._snapshot_rows: list[Adw.ActionRow] = []
+        self._rollback_buttons: list[Gtk.Button] = []
         self._current_op_id: str | None = None
         self._signal_handler_ids: list[tuple] = []
         self._active_dialog: Adw.MessageDialog | None = None
@@ -421,6 +422,7 @@ class DriversPage(Adw.PreferencesPage):
         for row in self._snapshot_rows:
             self._snapshots_group.remove(row)
         self._snapshot_rows.clear()
+        self._rollback_buttons.clear()
 
         if not snapshots:
             self._no_snapshots_status.set_visible(True)
@@ -428,13 +430,15 @@ class DriversPage(Adw.PreferencesPage):
         else:
             self._no_snapshots_status.set_visible(False)
             for snap in snapshots:
-                row = build_snapshot_row(
+                row, rollback_btn = build_snapshot_row(
                     snap,
                     on_rollback_clicked=self._on_rollback_clicked,
                     on_delete_clicked=self._on_delete_clicked,
                 )
                 self._snapshots_group.add(row)
                 self._snapshot_rows.append(row)
+                if rollback_btn is not None:
+                    self._rollback_buttons.append(rollback_btn)
             self._update_snapshot_storage_summary(snapshots)
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
@@ -450,8 +454,178 @@ class DriversPage(Adw.PreferencesPage):
         )
 
     def _on_rollback_clicked(self, _btn: Gtk.Button, snapshot: dict) -> None:
-        """Handle rollback button click — deferred to Story 3.3."""
-        log.info("Rollback requested for snapshot %s", snapshot.get("id", ""))
+        """Handle rollback button click — show pre-flight confirmation dialog (AC#2)."""
+        if self._install_in_progress:
+            return
+
+        snapshot_id = snapshot.get("id", "")
+        if not snapshot_id:
+            return
+
+        log.info("Rollback requested for snapshot %s", snapshot_id)
+
+        self._install_in_progress = True
+        self._set_install_buttons_sensitive(False)
+        self._set_rollback_buttons_sensitive(False)
+
+        window = self.get_root()
+        dialog = Adw.MessageDialog.new(
+            window,
+            _("Rollback to Snapshot"),
+        )
+        dialog.set_body_use_markup(False)
+
+        # Pre-flight panel as extra child
+        preflight = PreflightPanel()
+        preflight.set_loading()
+        dialog.set_extra_child(preflight)
+
+        dialog.add_response("cancel", _("Cancel"))
+        dialog.add_response("rollback", _("Rollback"))
+        dialog.set_response_appearance("rollback", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_enabled("rollback", False)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+
+        dialog._preflight = preflight
+        dialog._snapshot = snapshot
+        dialog._snapshot_id = snapshot_id
+        dialog._is_rollback = True
+
+        dialog.connect("response", self._on_rollback_dialog_response)
+        dialog.connect("close-request", self._on_dialog_closed)
+
+        # Load rollback pre-flight checks
+        self._load_rollback_preflight(dialog, snapshot_id)
+
+        self._active_dialog = dialog
+        dialog.present()
+
+    def _load_rollback_preflight(self, dialog: Adw.MessageDialog, snapshot_id: str) -> None:
+        """Load rollback-specific pre-flight checks in background."""
+        if self._dbus_client is None:
+            return
+
+        def _on_reply(proxy, result):
+            try:
+                reply = proxy.call_finish(result)
+                data = reply.unpack()[0]
+                GLib.idle_add(self._on_rollback_preflight_result, dialog, data)
+            except GLib.Error as exc:
+                log.warning("GetPreflightCheck (rollback) failed: %s", exc.message)
+                GLib.idle_add(self._on_preflight_error, dialog, str(exc.message))
+
+        self._dbus_client.call_method_async(
+            "GetPreflightCheck",
+            GLib.Variant("(s)", (f"rollback:{snapshot_id}",)),
+            _on_reply,
+        )
+
+    def _on_rollback_preflight_result(self, dialog: Adw.MessageDialog, data: dict) -> bool:
+        """Handle rollback pre-flight results on main thread."""
+        preflight: PreflightPanel = dialog._preflight
+
+        checks = data.get("checks", [])
+        current_driver = data.get("current_driver", "")
+        snapshot_driver = data.get("snapshot_driver", "")
+
+        # Build changes list showing current vs. snapshot state
+        changes = []
+        if current_driver or snapshot_driver:
+            changes.append(
+                {
+                    "name": _("Current driver: {}").format(current_driver or _("unknown")),
+                    "status": "info",
+                    "description": _("Snapshot driver: {}").format(
+                        snapshot_driver or _("unknown")
+                    ),
+                }
+            )
+
+        rollback_plan = _(
+            "Driver packages will be restored to snapshot state. A restart will be required."
+        )
+
+        preflight.set_checks(checks)
+        preflight.set_changes(changes)
+        preflight.set_rollback_plan(rollback_plan)
+
+        dialog.set_response_enabled("rollback", preflight.all_passed)
+
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+    def _on_rollback_dialog_response(self, dialog: Adw.MessageDialog, response: str) -> None:
+        """Handle rollback dialog response — start rollback or diagnostic."""
+        if response == "diagnostic":
+            # Navigate to Diagnostics tab (FR55)
+            window = self.get_root()
+            if window is not None and hasattr(window, "navigate_to"):
+                window.navigate_to("diagnostics")
+            return
+
+        if response != "rollback":
+            return
+
+        snapshot_id = dialog._snapshot_id
+
+        # Switch dialog to progress mode (AC#4)
+        progress_panel = OperationProgressPanel()
+        progress_panel.set_stage(_("Starting rollback\u2026"), 0.0)
+        dialog.set_extra_child(progress_panel)
+        dialog.set_heading(_("Rolling Back Driver"))
+        dialog.set_body("")
+
+        # No cancel during rollback (AC#4 — partial rollbacks are dangerous)
+        dialog.set_close_response("")
+        dialog.set_response_enabled("cancel", False)
+        dialog.set_response_enabled("rollback", False)
+
+        dialog._progress_panel = progress_panel
+
+        # Call RollbackDriver via D-Bus
+        self._start_rollback(snapshot_id)
+
+    def _start_rollback(self, snapshot_id: str) -> None:
+        """Initiate driver rollback via D-Bus."""
+        if self._dbus_client is None:
+            if self._active_dialog is not None and hasattr(self._active_dialog, "_progress_panel"):
+                panel = self._active_dialog._progress_panel
+                panel.set_error(_("Service unavailable — cannot start rollback"))
+                self._active_dialog.set_close_response("cancel")
+                self._active_dialog.set_response_enabled("cancel", True)
+            return
+
+        def _on_reply(proxy, result):
+            try:
+                reply = proxy.call_finish(result)
+                op_id = reply.unpack()[0]
+                GLib.idle_add(self._on_rollback_started, op_id)
+            except GLib.Error as exc:
+                log.warning("RollbackDriver failed: %s", exc.message)
+                GLib.idle_add(self._on_rollback_start_error, str(exc.message))
+
+        self._dbus_client.rollback_driver(snapshot_id, _on_reply)
+
+    def _on_rollback_started(self, op_id: str) -> bool:
+        """Handle successful RollbackDriver call — store op_id."""
+        self._current_op_id = op_id
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+    def _on_rollback_start_error(self, error_text: str) -> bool:
+        """Handle RollbackDriver call failure."""
+        if self._active_dialog is not None and hasattr(self._active_dialog, "_progress_panel"):
+            panel = self._active_dialog._progress_panel
+            panel.set_error(_sanitize_dbus_error(error_text))
+            self._active_dialog.set_close_response("cancel")
+            self._active_dialog.set_response_enabled("cancel", True)
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+    def _set_rollback_buttons_sensitive(self, sensitive: bool) -> None:
+        """Enable/disable all Rollback buttons in snapshot rows."""
+        tooltip = "" if sensitive else _("Another operation is in progress")
+        for btn in self._rollback_buttons:
+            btn.set_sensitive(sensitive)
+            btn.set_tooltip_text(tooltip)
 
     def _on_delete_clicked(self, _btn: Gtk.Button, snapshot: dict) -> None:
         """Handle delete button click — show confirmation dialog."""
@@ -578,10 +752,11 @@ class DriversPage(Adw.PreferencesPage):
         dialog.present()
 
     def _on_dialog_closed(self, dialog: Adw.MessageDialog) -> bool:
-        """Clean up when install dialog is closed."""
+        """Clean up when install/rollback dialog is closed."""
         self._active_dialog = None
         self._install_in_progress = False
         self._set_install_buttons_sensitive(True)
+        self._set_rollback_buttons_sensitive(True)
         return False  # Allow default close behavior
 
     def _load_preflight(self, dialog: Adw.MessageDialog) -> None:
@@ -626,7 +801,10 @@ class DriversPage(Adw.PreferencesPage):
     def _on_preflight_error(self, dialog: Adw.MessageDialog, error_text: str) -> bool:
         """Handle pre-flight check error on main thread."""
         dialog._preflight.set_error(_sanitize_dbus_error(error_text))
-        dialog.set_response_enabled("install", False)
+        if getattr(dialog, "_is_rollback", False) is True:
+            dialog.set_response_enabled("rollback", False)
+        else:
+            dialog.set_response_enabled("install", False)
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _on_install_dialog_response(self, dialog: Adw.MessageDialog, response: str) -> None:
@@ -721,26 +899,40 @@ class DriversPage(Adw.PreferencesPage):
 
         dialog = self._active_dialog
         panel = dialog._progress_panel
+        is_rollback = getattr(dialog, "_is_rollback", False) is True
 
         if success:
-            panel.set_success(message or _("Driver installed successfully"))
-            dialog.set_heading(_("Installation Complete"))
+            if is_rollback:
+                panel.set_success(message or _("Driver rollback completed successfully"))
+                dialog.set_heading(_("Rollback Complete"))
+            else:
+                panel.set_success(message or _("Driver installed successfully"))
+                dialog.set_heading(_("Installation Complete"))
         else:
             # Try to parse structured error (BS-2: JSON in message field)
             error_data = parse_structured_error(message)
             if error_data:
                 safe_msg = format_error_message(error_data)
             else:
-                safe_msg = _sanitize_dbus_error(message) if message else _("Installation failed")
+                default_msg = _("Rollback failed") if is_rollback else _("Installation failed")
+                safe_msg = _sanitize_dbus_error(message) if message else default_msg
             panel.set_error(safe_msg)
-            dialog.set_heading(_("Installation Failed"))
-            # Add error action buttons per AC7
-            if not dialog.has_response("rollback"):
-                dialog.add_response("rollback", _("Rollback to Previous Driver"))
-                dialog.set_response_appearance("rollback", Adw.ResponseAppearance.SUGGESTED)
-            if not dialog.has_response("details"):
-                dialog.add_response("details", _("View Details"))
-                dialog.set_response_appearance("details", Adw.ResponseAppearance.DEFAULT)
+
+            if is_rollback:
+                dialog.set_heading(_("Rollback Failed"))
+                # AC#6: Offer alternative recovery paths (FR55)
+                if not dialog.has_response("diagnostic"):
+                    dialog.add_response("diagnostic", _("Generate Diagnostic Report"))
+                    dialog.set_response_appearance("diagnostic", Adw.ResponseAppearance.DEFAULT)
+            else:
+                dialog.set_heading(_("Installation Failed"))
+                # Add error action buttons per AC7
+                if not dialog.has_response("rollback"):
+                    dialog.add_response("rollback", _("Rollback to Previous Driver"))
+                    dialog.set_response_appearance("rollback", Adw.ResponseAppearance.SUGGESTED)
+                if not dialog.has_response("details"):
+                    dialog.add_response("details", _("View Details"))
+                    dialog.set_response_appearance("details", Adw.ResponseAppearance.DEFAULT)
 
         dialog.set_close_response("cancel")  # Re-enable Escape to close
         dialog.set_response_enabled("cancel", True)

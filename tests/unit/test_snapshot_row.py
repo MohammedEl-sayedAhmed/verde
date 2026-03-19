@@ -11,7 +11,7 @@ import pytest
 gi.require_version("Adw", "1")
 gi.require_version("Gtk", "4.0")
 
-from gi.repository import Adw  # noqa: E402
+from gi.repository import Adw, Gtk  # noqa: E402
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -84,44 +84,47 @@ class TestBuildSnapshotRow:
     def test_returns_expander_row(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT)
+        row, rollback_btn = build_snapshot_row(self.SAMPLE_SNAPSHOT)
         assert isinstance(row, Adw.ExpanderRow)
+        assert isinstance(rollback_btn, Gtk.Button)
 
     def test_title_contains_date(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT)
+        row, _ = build_snapshot_row(self.SAMPLE_SNAPSHOT)
         assert "2026-03-18" in row.get_title()
 
     def test_subtitle_contains_driver(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT)
+        row, _ = build_snapshot_row(self.SAMPLE_SNAPSHOT)
         assert "560" in row.get_subtitle()
 
     def test_rollback_callback_connected(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
         callback = MagicMock()
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT, on_rollback_clicked=callback)
+        row, rollback_btn = build_snapshot_row(self.SAMPLE_SNAPSHOT, on_rollback_clicked=callback)
         # Row should have been created with the callback
         assert row is not None
+        assert rollback_btn is not None
 
     def test_delete_callback_connected(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
         callback = MagicMock()
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT, on_delete_clicked=callback)
+        row, _ = build_snapshot_row(self.SAMPLE_SNAPSHOT, on_delete_clicked=callback)
         assert row is not None
 
     def test_no_callbacks_still_builds(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
-        row = build_snapshot_row(self.SAMPLE_SNAPSHOT)
+        row, rollback_btn = build_snapshot_row(self.SAMPLE_SNAPSHOT)
         assert row is not None
+        assert rollback_btn is not None
 
     def test_minimal_snapshot_data(self):
         from verde.widgets.snapshot_row import build_snapshot_row
 
-        row = build_snapshot_row({"id": "test", "timestamp": ""})
+        row, _ = build_snapshot_row({"id": "test", "timestamp": ""})
         assert isinstance(row, Adw.ExpanderRow)
