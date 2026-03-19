@@ -62,7 +62,13 @@ class _IdleTimer:
 
 
 def main() -> int:
-    """Start the Verde daemon main loop."""
+    """Start the Verde daemon main loop, or enter recovery mode with --repair."""
+    # Check for --repair before any GLib/D-Bus imports (AC#7: standalone)
+    if "--repair" in sys.argv:
+        from cli_recovery import recovery_main
+
+        return recovery_main()
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s: %(message)s",
