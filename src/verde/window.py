@@ -199,6 +199,9 @@ class VerdeApplication(Adw.Application):
             drivers = win.view_stack.get_child_by_name("drivers")
             if hasattr(drivers, "bind_state"):
                 drivers.bind_state(self.gpu_state, self.dbus_client)
+            power = win.view_stack.get_child_by_name("power")
+            if hasattr(power, "bind_state"):
+                power.bind_state(self.gpu_state, self.dbus_client)
             self.gpu_state.connect("notify::degraded-state", self._on_degraded_state, win)
         win.present()
         self.dbus_client.connect_async()
