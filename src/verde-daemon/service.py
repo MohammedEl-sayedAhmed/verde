@@ -40,6 +40,7 @@ from verde_daemon.degraded_states import (
 )
 from verde_daemon.diagnostics import DiagnosticCollector
 from verde_daemon.driver_manager import DriverManager
+from verde_daemon.integrity_checker import IntegrityChecker
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.pending_summary import PendingSummaryManager
 from verde_daemon.polkit import (
@@ -51,6 +52,7 @@ from verde_daemon.polkit import (
 )
 from verde_daemon.power_manager import PowerManager
 from verde_daemon.preflight import PreflightChecker
+from verde_daemon.rate_limiter import RateLimiter
 from verde_daemon.snapshot_manager import SnapshotManager
 from verde_daemon.state_tracker import StateTracker
 from verde_daemon.validators import (
@@ -176,6 +178,14 @@ class VerdeService:
 
         # State tracker (Story 6.1)
         self._state_tracker = StateTracker()
+
+        # Rate limiter (Story 6.2)
+        self._rate_limiter = RateLimiter()
+        # Periodically purge stale rate-limiter entries (every 60s)
+        GLib.timeout_add_seconds(60, self._cleanup_rate_limiter)
+
+        # Integrity checker (Story 6.2)
+        self._integrity_checker = IntegrityChecker()
 
         # Degraded state tracking — re-detected each poll cycle.
         # Check whether a driver package is installed (even if the kernel
@@ -361,6 +371,13 @@ class VerdeService:
         log.warning("Lost bus name %s — shutting down", name)
         self._loop.quit()
 
+    def _cleanup_rate_limiter(self) -> bool:
+        """Periodic callback to purge stale rate-limiter entries."""
+        purged = self._rate_limiter.cleanup_stale()
+        if purged:
+            log.debug("Purged %d stale rate-limiter entries", purged)
+        return GLib.SOURCE_CONTINUE  # type: ignore[no-any-return]
+
     # ------------------------------------------------------------------
     # Startup detection (Story 6.1)
     # ------------------------------------------------------------------
@@ -469,10 +486,34 @@ class VerdeService:
         parameters: GLib.Variant,
         invocation: Gio.DBusMethodInvocation,
     ) -> None:
-        # Ping is a special case — no auth, no validation
+        # Ping is a special case — no auth, no validation, no rate limit
         if method_name == "Ping":
             self._on_idle_reset()
             invocation.return_value(None)
+            return
+
+        # Reject calls with no sender identity
+        if not sender:
+            invocation.return_dbus_error(
+                "org.freedesktop.DBus.Error.AccessDenied",
+                "Sender identity required.",
+            )
+            return
+
+        # Rate limit check (Story 6.2)
+        if not self._rate_limiter.check(sender, method_name):
+            log.warning("Rate limited: sender=%s method=%s", sender, method_name)
+            if self._audit:
+                self._audit.log(
+                    "RATE_LIMITED",
+                    {"method": method_name},
+                    sender,
+                    "denied",
+                )
+            invocation.return_dbus_error(
+                "com.verde.Error.RateLimited",
+                "Too many requests. Please try again later.",
+            )
             return
 
         # Story 3.5: Post-reboot summary — no auth required (read/clear only)
@@ -498,6 +539,10 @@ class VerdeService:
             self._on_idle_reset()
             self._dispatch_list_snapshots(invocation)
             return
+        if method_name == "GetIntegrityStatus":
+            self._on_idle_reset()
+            self._dispatch_get_integrity_status(invocation)
+            return
 
         # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
         # Validate input and dispatch before the auth gate.
@@ -507,6 +552,13 @@ class VerdeService:
                     value = parameters.get_child_value(0).get_string()
                     validate_operation_name(value)
                 except ValueError as exc:
+                    if self._audit:
+                        self._audit.log(
+                            "VALIDATION_FAILURE",
+                            {"method": method_name},
+                            sender,
+                            "rejected",
+                        )
                     invocation.return_dbus_error(
                         "com.verde.Error.InvalidArgument",
                         str(exc),
@@ -534,6 +586,13 @@ class VerdeService:
                     value = parameters.get_child_value(param_idx).get_string()
                     validator(value)
                 except ValueError as exc:
+                    if self._audit:
+                        self._audit.log(
+                            "VALIDATION_FAILURE",
+                            {"method": method_name},
+                            sender,
+                            "rejected",
+                        )
                     invocation.return_dbus_error(
                         "com.verde.Error.InvalidArgument",
                         str(exc),
@@ -1023,6 +1082,40 @@ class VerdeService:
             invocation.return_dbus_error(
                 "com.verde.Error.InternalError",
                 "Internal error while retrieving power status.",
+            )
+
+    # ------------------------------------------------------------------
+    # Integrity status dispatch (Story 6.2)
+    # ------------------------------------------------------------------
+
+    def _dispatch_get_integrity_status(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle GetIntegrityStatus: return installation integrity check."""
+        try:
+            result = self._integrity_checker.check_all()
+            gv_files = []
+            for f in result["files"]:
+                gv_files.append(
+                    {
+                        "path": GLib.Variant("s", f["path"]),
+                        "purpose": GLib.Variant("s", f["purpose"]),
+                        "status": GLib.Variant("s", f["status"]),
+                        "if_missing": GLib.Variant("s", f["if_missing"]),
+                    }
+                )
+            gv_result = {
+                "healthy": GLib.Variant("b", result["healthy"]),
+                "guidance": GLib.Variant("s", result["guidance"]),
+                "files": GLib.Variant("aa{sv}", gv_files),
+            }
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", gv_result)))
+        except Exception:
+            log.exception("GetIntegrityStatus dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while checking installation integrity.",
             )
 
     # ------------------------------------------------------------------

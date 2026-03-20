@@ -76,6 +76,11 @@
     </method>
     <method name="ClearPostRebootSummary"/>
 
+    <!-- Story 6.2: Integrity status -->
+    <method name="GetIntegrityStatus">
+      <arg name="status" type="a{sv}" direction="out"/>
+    </method>
+
     <!-- Signals -->
     <signal name="DegradedStateChanged">
       <arg name="state_info" type="a{sv}"/>

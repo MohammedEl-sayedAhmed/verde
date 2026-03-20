@@ -90,7 +90,7 @@ class RateLimiter:
 
         if is_write:
             config = self.write_config
-            elapsed = now - state.last_write_refill
+            elapsed = max(0.0, now - state.last_write_refill)
             state.write_tokens = min(
                 config.capacity,
                 state.write_tokens + elapsed * config.refill_rate,
@@ -102,7 +102,7 @@ class RateLimiter:
             return False
         else:
             config = self.read_config
-            elapsed = now - state.last_read_refill
+            elapsed = max(0.0, now - state.last_read_refill)
             state.read_tokens = min(
                 config.capacity,
                 state.read_tokens + elapsed * config.refill_rate,

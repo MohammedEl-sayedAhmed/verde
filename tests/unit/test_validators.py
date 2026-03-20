@@ -130,3 +130,22 @@ class TestLengthGuard:
         """256-char input passes length check but fails regex."""
         with pytest.raises(ValueError, match="Invalid driver version"):
             validate_driver_version("5" * 256)
+
+
+# ===================================================================
+# Null byte rejection (Story 6.2 P-5)
+# ===================================================================
+
+
+class TestNullByteRejection:
+    def test_null_byte_in_driver_version(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_driver_version("560\x00")
+
+    def test_null_byte_in_snapshot_id(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_snapshot_id("20260318T143000_nvidia-560-a1b2\x00")
+
+    def test_null_byte_in_operation_name(self):
+        with pytest.raises(ValueError, match="invalid characters"):
+            validate_operation_name("driver_install\x00")

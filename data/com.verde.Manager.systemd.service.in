@@ -31,6 +31,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 # Privilege control
 NoNewPrivileges=no
 MemoryDenyWriteExecute=yes
+RestrictSUIDSGID=yes
 
 # System call filtering
 SystemCallArchitectures=native

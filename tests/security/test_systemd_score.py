@@ -32,6 +32,7 @@ class TestSystemdSandboxing:
             "RestrictNamespaces=yes",
             "LockPersonality=yes",
             "RemoveIPC=yes",
+            "RestrictSUIDSGID=yes",
             "DevicePolicy=closed",
         ],
     )
