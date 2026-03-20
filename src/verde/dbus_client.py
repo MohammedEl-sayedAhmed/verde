@@ -199,7 +199,7 @@ class VerdeDBusClient(GObject.Object):
             log.warning("Cannot call %s — not connected", method_name)
             return
 
-        timeout_ms = 60000 if method_name in self._SLOW_METHODS else 5000
+        timeout_ms = 180000 if method_name in self._SLOW_METHODS else 5000
 
         self._proxy.call(
             method_name,

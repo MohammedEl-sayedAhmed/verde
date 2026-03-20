@@ -129,7 +129,7 @@ class DriverManager:
             ["ubuntu-drivers", "list"],
             ["ubuntu-drivers", "list", "--gpgpu"],
         ):
-            result = self._run_cmd(cmd, timeout=30)
+            result = self._run_cmd(cmd, timeout=90)
             if result is not None:
                 lines.append(result.stdout)
         return "\n".join(lines)
@@ -165,7 +165,7 @@ class DriverManager:
 
     def _get_recommended_driver(self) -> str | None:
         """Run ``ubuntu-drivers list --recommended`` to find the recommendation."""
-        result = self._run_cmd(["ubuntu-drivers", "list", "--recommended"], timeout=30)
+        result = self._run_cmd(["ubuntu-drivers", "list", "--recommended"], timeout=90)
         if result is None:
             return None
         for line in result.stdout.splitlines():
