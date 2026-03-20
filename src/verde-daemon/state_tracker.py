@@ -133,7 +133,7 @@ class StateTracker:
             if has_nouveau:
                 return "nouveau"
             return "none"
-        except (subprocess.TimeoutExpired, OSError):
+        except (subprocess.TimeoutExpired, OSError, IndexError):
             return "unknown"
 
     def _get_managed_config_hashes(self) -> list[dict]:
@@ -163,10 +163,10 @@ class StateTracker:
         changes: list[dict] = []
         now = datetime.now(tz=UTC).isoformat()
 
-        # Driver version
+        # Driver version — suppress when either side is empty (sysfs unreadable)
         current_ver = self._get_driver_version()
         prev_ver = self._previous_state.get("driver_version", "")
-        if current_ver != prev_ver and (current_ver or prev_ver):
+        if current_ver != prev_ver and current_ver and prev_ver:
             changes.append(
                 {
                     "change_type": "driver_version",
@@ -177,10 +177,10 @@ class StateTracker:
                 }
             )
 
-        # Driver type
+        # Driver type — suppress when either side is "unknown" (lsmod failure)
         current_type = self._get_driver_type()
         prev_type = self._previous_state.get("driver_type", "")
-        if current_type != prev_type and current_type != "unknown":
+        if current_type != prev_type and current_type != "unknown" and prev_type != "unknown":
             changes.append(
                 {
                     "change_type": "driver_type",

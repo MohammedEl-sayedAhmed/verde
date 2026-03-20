@@ -52,6 +52,7 @@ from verde_daemon.polkit import (
 from verde_daemon.power_manager import PowerManager
 from verde_daemon.preflight import PreflightChecker
 from verde_daemon.snapshot_manager import SnapshotManager
+from verde_daemon.state_tracker import StateTracker
 from verde_daemon.validators import (
     validate_driver_version,
     validate_operation_name,
@@ -172,6 +173,9 @@ class VerdeService:
 
         # Diagnostic collector (Story 5.1)
         self._diagnostics = DiagnosticCollector(nvml=self._nvml)
+
+        # State tracker (Story 6.1)
+        self._state_tracker = StateTracker()
 
         # Degraded state tracking — re-detected each poll cycle.
         # Check whether a driver package is installed (even if the kernel
@@ -346,6 +350,8 @@ class VerdeService:
         name: str,
     ) -> None:
         log.info("Acquired bus name: %s", name)
+        # Defer external change detection to after main loop starts (Story 6.1)
+        GLib.idle_add(self._run_startup_detection)
 
     def _on_name_lost(
         self,
@@ -354,6 +360,100 @@ class VerdeService:
     ) -> None:
         log.warning("Lost bus name %s — shutting down", name)
         self._loop.quit()
+
+    # ------------------------------------------------------------------
+    # Startup detection (Story 6.1)
+    # ------------------------------------------------------------------
+
+    _startup_detection_done: bool = False
+
+    def _run_startup_detection(self) -> bool:
+        """Run external change detection and config integrity on startup."""
+        if self._startup_detection_done:
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+        self._startup_detection_done = True
+
+        detection_ok = False
+        try:
+            prev = self._state_tracker.load_previous_state()
+            if prev is None:
+                # First run — save state and skip detection
+                log.info("First run — saving initial state snapshot")
+                self._state_tracker.save_current_state()
+                return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+            changes = self._state_tracker.detect_external_changes()
+            integrity = self._state_tracker.validate_config_integrity()
+
+            # Log to audit
+            if self._audit:
+                for ch in changes:
+                    self._audit.log(
+                        "EXTERNAL_CHANGE",
+                        {
+                            "type": ch.get("change_type", ""),
+                            "field": ch.get("field", ""),
+                            "old": ch.get("old_value", ""),
+                            "new": ch.get("new_value", ""),
+                        },
+                        "daemon",
+                        "detected",
+                    )
+                for iss in integrity:
+                    self._audit.log(
+                        "INTEGRITY_ISSUE",
+                        {
+                            "file": iss.get("file_path", ""),
+                            "issue": iss.get("issue_type", ""),
+                            "expected": iss.get("expected_hash", ""),
+                            "actual": iss.get("actual_hash", ""),
+                        },
+                        "daemon",
+                        "detected",
+                    )
+
+            # Emit D-Bus signal if changes found (P-1: pass raw dicts, not pre-boxed Variants)
+            if changes or integrity:
+                raw_changes = [
+                    {
+                        "change_type": GLib.Variant("s", ch.get("change_type", "")),
+                        "field": GLib.Variant("s", ch.get("field", "")),
+                        "old_value": GLib.Variant("s", ch.get("old_value", "")),
+                        "new_value": GLib.Variant("s", ch.get("new_value", "")),
+                        "detected_at": GLib.Variant("s", ch.get("detected_at", "")),
+                    }
+                    for ch in changes
+                ]
+                raw_integrity = [
+                    {
+                        "file_path": GLib.Variant("s", iss.get("file_path", "")),
+                        "issue_type": GLib.Variant("s", iss.get("issue_type", "")),
+                        "expected_hash": GLib.Variant("s", iss.get("expected_hash", "")),
+                        "actual_hash": GLib.Variant("s", iss.get("actual_hash", "")),
+                    }
+                    for iss in integrity
+                ]
+                self._emit_signal(
+                    "ExternalChangesDetected",
+                    "(aa{sv}aa{sv})",
+                    (raw_changes, raw_integrity),
+                )
+                log.info(
+                    "External changes detected: %d changes, %d integrity issues",
+                    len(changes),
+                    len(integrity),
+                )
+
+            detection_ok = True
+
+        except Exception:
+            log.exception("Startup detection failed")
+
+        # P-2: Only save fresh state after successful detection
+        if detection_ok:
+            self._state_tracker.save_current_state()
+
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     # ------------------------------------------------------------------
     # D-Bus method call handler

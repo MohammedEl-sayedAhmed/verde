@@ -23,6 +23,7 @@ daemon_sources = [
   'preflight.py',
   'service.py',
   'snapshot_manager.py',
+  'state_tracker.py',
   'validators.py',
 ]
 

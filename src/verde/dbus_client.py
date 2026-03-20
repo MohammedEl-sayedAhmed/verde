@@ -46,6 +46,11 @@ class VerdeDBusClient(GObject.Object):
             None,
             (str, bool, str),  # op_id, success, message
         ),
+        "external-changes-detected": (
+            GObject.SignalFlags.RUN_LAST,
+            None,
+            (object, object),  # changes: list[dict], integrity: list[dict]
+        ),
     }
 
     connected = GObject.Property(type=bool, default=False)
@@ -158,6 +163,11 @@ class VerdeDBusClient(GObject.Object):
             required = args[0] if len(args) > 0 else True
             reason = args[1] if len(args) > 1 else ""
             GLib.idle_add(self._update_reboot_state, required, reason)
+        elif signal_name == "ExternalChangesDetected":
+            args = parameters.unpack()
+            changes = args[0] if len(args) > 0 else []
+            integrity = args[1] if len(args) > 1 else []
+            GLib.idle_add(self._emit_external_changes, changes, integrity)
         elif signal_name == "OperationProgress":
             self.emit("operation-progress", *parameters.unpack())
         elif signal_name == "OperationComplete":
@@ -166,6 +176,10 @@ class VerdeDBusClient(GObject.Object):
     def _update_reboot_state(self, required: bool, reason: str) -> bool:
         self._gpu_state._set_if_changed("reboot-required", required)
         self._gpu_state._set_if_changed("reboot-reason", reason)
+        return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
+
+    def _emit_external_changes(self, changes: list, integrity: list) -> bool:
+        self.emit("external-changes-detected", changes, integrity)
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     # ── Method calls ─────────────────────────────────────────────────

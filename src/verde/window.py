@@ -211,6 +211,11 @@ class VerdeApplication(Adw.Application):
             if hasattr(diagnostics, "bind_state"):
                 diagnostics.bind_state(self.gpu_state, self.dbus_client)
             self.gpu_state.connect("notify::degraded-state", self._on_degraded_state, win)
+            self.dbus_client.connect(
+                "external-changes-detected",
+                self._on_external_changes,
+                win,
+            )
         win.present()
         self.dbus_client.connect_async()
 
@@ -226,6 +231,48 @@ class VerdeApplication(Adw.Application):
         else:
             # Reset guard when leaving gpu_lost state
             self._gpu_lost_dialog_shown = False
+
+    def _on_external_changes(
+        self,
+        _client,
+        changes: list,
+        integrity: list,
+        win: Adw.ApplicationWindow,
+    ) -> None:
+        """Show a banner when external changes are detected (Story 6.1)."""
+        if not changes and not integrity:
+            return
+        msgs = []
+        for ch in changes:
+            field = ch.get("field", "")
+            old = ch.get("old_value", "")
+            new = ch.get("new_value", "")
+            if field == "driver_version":
+                msgs.append(
+                    _("NVIDIA driver changed from {old} to {new} outside of Verde").format(
+                        old=old, new=new
+                    )
+                )
+            elif field == "driver_type":
+                msgs.append(_("Driver type changed from {old} to {new}").format(old=old, new=new))
+            elif field == "kernel_version":
+                msgs.append(_("Kernel updated from {old} to {new}").format(old=old, new=new))
+        for iss in integrity:
+            path = iss.get("file_path", "")
+            issue = iss.get("issue_type", "")
+            if issue == "deleted":
+                msgs.append(_("Config file {path} was deleted").format(path=path))
+            elif issue == "modified":
+                msgs.append(_("Config file {path} was modified externally").format(path=path))
+            elif issue == "created_externally":
+                msgs.append(_("Config file {path} was created externally").format(path=path))
+        if msgs:
+            win.banner.set_title("; ".join(msgs))
+            win.banner.set_button_label(_("Dismiss"))
+            win.banner.set_revealed(True)
+            if not getattr(win, "_banner_dismiss_connected", False):
+                win.banner.connect("button-clicked", lambda b: b.set_revealed(False))
+                win._banner_dismiss_connected = True
 
     def _on_dbus_connected(self, client, _pspec) -> None:
         """Query post-reboot summary once when D-Bus connects (Story 3.5)."""
