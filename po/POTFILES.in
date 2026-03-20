@@ -3,3 +3,13 @@ data/com.verde.app.metainfo.xml.in
 src/verde/help_content.py
 src/verde/error_messages.py
 src/verde/humanized_status.py
+src/verde/views/dashboard.py
+src/verde/views/drivers.py
+src/verde/views/power.py
+src/verde/views/diagnostics.py
+src/verde/window.py
+src/verde/widgets/driver_card.py
+src/verde/widgets/preflight_banner.py
+src/verde/widgets/progress_overlay.py
+src/verde/widgets/snapshot_row.py
+src/verde/widgets/status_indicator.py
