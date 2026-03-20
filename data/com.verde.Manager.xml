@@ -81,6 +81,14 @@
       <arg name="status" type="a{sv}" direction="out"/>
     </method>
 
+    <!-- Story 2.7: Module diagnosis & fix -->
+    <method name="DiagnoseModuleFailure">
+      <arg name="diagnosis" type="a{sv}" direction="out"/>
+    </method>
+    <method name="FixModuleNotLoaded">
+      <arg name="op_id" type="s" direction="out"/>
+    </method>
+
     <!-- Signals -->
     <signal name="DegradedStateChanged">
       <arg name="state_info" type="a{sv}"/>

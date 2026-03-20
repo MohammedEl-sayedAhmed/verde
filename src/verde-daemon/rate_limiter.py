@@ -28,6 +28,7 @@ WRITE_METHODS: frozenset[str] = frozenset(
         "FixHibernate",
         "RepairDpkg",
         "DeleteSnapshot",
+        "FixModuleNotLoaded",
     }
 )
 

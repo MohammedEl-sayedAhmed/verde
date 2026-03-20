@@ -200,7 +200,7 @@ class VerdeApplication(Adw.Application):
             win = VerdeWindow(application=self)
             dashboard = win.view_stack.get_child_by_name("dashboard")
             if hasattr(dashboard, "bind_state"):
-                dashboard.bind_state(self.gpu_state)
+                dashboard.bind_state(self.gpu_state, self.dbus_client)
             drivers = win.view_stack.get_child_by_name("drivers")
             if hasattr(drivers, "bind_state"):
                 drivers.bind_state(self.gpu_state, self.dbus_client)

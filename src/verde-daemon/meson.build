@@ -17,6 +17,7 @@ daemon_sources = [
   'diagnostics.py',
   'driver_manager.py',
   'integrity_checker.py',
+  'module_doctor.py',
   'nvml_wrapper.py',
   'pending_summary.py',
   'polkit.py',

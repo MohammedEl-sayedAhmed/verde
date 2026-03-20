@@ -41,6 +41,7 @@ from verde_daemon.degraded_states import (
 from verde_daemon.diagnostics import DiagnosticCollector
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.integrity_checker import IntegrityChecker
+from verde_daemon.module_doctor import ModuleDoctor
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.pending_summary import PendingSummaryManager
 from verde_daemon.polkit import (
@@ -186,6 +187,9 @@ class VerdeService:
 
         # Integrity checker (Story 6.2)
         self._integrity_checker = IntegrityChecker()
+
+        # Module doctor (Story 2.7)
+        self._module_doctor = ModuleDoctor()
 
         # Degraded state tracking — re-detected each poll cycle.
         # Check whether a driver package is installed (even if the kernel
@@ -526,6 +530,12 @@ class VerdeService:
             self._dispatch_clear_post_reboot_summary(invocation)
             return
 
+        # Module diagnosis (Story 2.7) — read-only, no Polkit
+        if method_name == "DiagnoseModuleFailure":
+            self._on_idle_reset()
+            self._dispatch_diagnose_module(invocation)
+            return
+
         # Read-only methods — no Polkit auth required
         if method_name in _GPU_DATA_METHODS:
             self._on_idle_reset()
@@ -681,6 +691,11 @@ class VerdeService:
             self._dispatch_fix_hibernate(invocation, sender)
             return
 
+        # Module fix (Story 2.7)
+        if method_name == "FixModuleNotLoaded":
+            self._dispatch_fix_module(invocation, sender)
+            return
+
         # Diagnostic report generation (Story 5.1)
         if method_name == "GenerateDiagnosticReport":
             self._dispatch_generate_diagnostic(parameters, invocation, sender)
@@ -752,6 +767,11 @@ class VerdeService:
             # Power fix pre-flight (Story 4.2)
             if operation in ("fix_suspend", "fix_hibernate"):
                 self._dispatch_power_preflight(operation, invocation)
+                return
+
+            # Module fix pre-flight (Story 2.7)
+            if operation == "fix_module":
+                self._dispatch_module_preflight(invocation)
                 return
 
             pf_result = self._preflight.run_all_checks(operation)
@@ -1336,6 +1356,158 @@ class VerdeService:
 
     # ------------------------------------------------------------------
     # Diagnostic report dispatch (Story 5.1)
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Module diagnosis & fix dispatch (Story 2.7)
+    # ------------------------------------------------------------------
+
+    def _dispatch_diagnose_module(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle DiagnoseModuleFailure: return diagnosis as a{sv}."""
+        try:
+            diag = self._module_doctor.diagnose()
+            gv_result = {
+                "cause": GLib.Variant("s", diag.get("cause", "")),
+                "detail": GLib.Variant("s", diag.get("detail", "")),
+                "reboot_required": GLib.Variant("b", diag.get("reboot_required", False)),
+                "fixable": GLib.Variant("b", diag.get("fixable", False)),
+                "packages": GLib.Variant("as", diag.get("packages", [])),
+            }
+            # fix_actions as as (array of strings)
+            gv_result["fix_actions"] = GLib.Variant("as", diag.get("fix_actions", []))
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", gv_result)))
+        except Exception:
+            log.exception("DiagnoseModuleFailure dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while diagnosing module failure.",
+            )
+
+    def _dispatch_fix_module(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle FixModuleNotLoaded: diagnose, guard, return op_id, spawn worker."""
+        if self._operation_in_progress:
+            invocation.return_dbus_error(
+                "com.verde.Error.OperationInProgress",
+                self._operation_in_progress_message(),
+            )
+            return
+
+        self._operation_in_progress = True
+        op_id = uuid.uuid4().hex[:12]
+        self._current_op_id = op_id
+        self._current_op_type = "FixModuleNotLoaded"
+        self._current_op_started = time.monotonic()
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("s", op_id)))
+
+        if self._audit:
+            self._audit.log("FIX_MODULE", {}, sender, "started")
+
+        thread = threading.Thread(
+            target=self._do_fix_module,
+            args=(op_id, sender),
+            daemon=True,
+        )
+        thread.start()
+
+    def _do_fix_module(self, op_id: str, sender: str) -> None:
+        """Worker thread for FixModuleNotLoaded."""
+        inhibitor_fd: int | None = None
+        try:
+            GLib.idle_add(self._on_idle_hold)
+            inhibitor_fd = self._acquire_inhibitor_lock("Fixing NVIDIA kernel module")
+
+            diag = self._module_doctor.diagnose()
+
+            def _progress(oid: str, pct: float, msg: str) -> None:
+                self._emit_signal("OperationProgress", "(sds)", (oid, pct, msg))
+
+            def _complete(oid: str, success: bool, msg: str) -> None:
+                self._emit_signal("OperationComplete", "(sbs)", (oid, success, msg))
+                if self._audit:
+                    self._audit.log(
+                        "FIX_MODULE",
+                        {},
+                        sender,
+                        "success" if success else "failed",
+                        error=None if success else msg,
+                    )
+
+            def _reboot(required: bool, reason: str) -> None:
+                self._emit_signal("RebootRequired", "(bs)", (required, reason))
+
+            self._module_doctor.fix_module(diag, op_id, _progress, _complete, _reboot)
+
+        except Exception as exc:
+            log.exception("Unhandled error in fix_module worker for %s", op_id)
+            self._emit_signal(
+                "OperationComplete",
+                "(sbs)",
+                (op_id, False, f"Internal error: {exc}"),
+            )
+            if self._audit:
+                self._audit.log("FIX_MODULE", {}, sender, "failed", error=str(exc))
+        finally:
+            self._release_inhibitor_lock(inhibitor_fd)
+
+            def _release_guard() -> bool:
+                self._operation_in_progress = False
+                self._current_op_id = None
+                self._current_op_type = None
+                self._current_op_started = None
+                self._on_idle_release()
+                return GLib.SOURCE_REMOVE
+
+            GLib.idle_add(_release_guard)
+
+    def _dispatch_module_preflight(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle GetPreflightCheck('fix_module') — run diagnosis and return results."""
+        try:
+            diag = self._module_doctor.diagnose()
+            changes = []
+            for action in diag.get("fix_actions", []):
+                changes.append(
+                    {
+                        "description": GLib.Variant("s", action),
+                        "current_state": GLib.Variant("s", "needed"),
+                        "target_state": GLib.Variant("s", "applied"),
+                    }
+                )
+            for pkg in diag.get("packages", []):
+                changes.append(
+                    {
+                        "description": GLib.Variant("s", f"Install {pkg}"),
+                        "current_state": GLib.Variant("s", "missing"),
+                        "target_state": GLib.Variant("s", "installed"),
+                    }
+                )
+
+            result: dict[str, GLib.Variant] = {
+                "ready": GLib.Variant("b", diag.get("fixable", False)),
+                "already_fixed": GLib.Variant("b", False),
+                "changes": GLib.Variant("aa{sv}", changes),
+                "cause": GLib.Variant("s", diag.get("cause", "")),
+                "detail": GLib.Variant("s", diag.get("detail", "")),
+                "reboot_required": GLib.Variant("b", diag.get("reboot_required", False)),
+            }
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", result)))
+        except Exception:
+            log.exception("Module preflight dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while running module pre-flight check.",
+            )
+
     # ------------------------------------------------------------------
 
     def _dispatch_generate_diagnostic(

@@ -29,6 +29,7 @@ class TestMethodActionMap:
         "DeleteSnapshot",
         "FixSuspend",
         "FixHibernate",
+        "FixModuleNotLoaded",
         "GenerateDiagnosticReport",
     }
 

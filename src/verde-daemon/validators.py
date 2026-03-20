@@ -14,7 +14,7 @@ _MAX_INPUT_LENGTH = 256
 DRIVER_VERSION_PATTERN = re.compile(r"^[0-9]{3,4}(-server|-open)?$")
 SNAPSHOT_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}_[a-zA-Z0-9._-]+-[0-9a-f]{4}$")
 OPERATION_NAME_PATTERN = re.compile(
-    r"^(driver_install|driver_switch|driver_rollback|fix_suspend|fix_hibernate)$"
+    r"^(driver_install|driver_switch|driver_rollback|fix_suspend|fix_hibernate|fix_module)$"
 )
 
 

@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import builtins
+import logging
 from typing import TYPE_CHECKING
 
-from gi.repository import Adw, Gio, Gtk
+from gi.repository import Adw, Gio, GLib, Gtk
 
 from verde.widgets.status_indicator import StatusIndicator
+
+# gettext stub
+try:
+    _("test")  # type: ignore[used-before-def]
+except NameError:
+    import builtins
+
+    if not hasattr(builtins, "_"):
+
+        def _(s: str) -> str:
+            return s
+
+        builtins._ = _  # type: ignore[attr-defined]
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from verde.gpu_state import GPUState
@@ -105,12 +122,11 @@ _DEGRADED_STATES: dict[str, dict[str, str | None]] = {
         "title": "Driver Installed \u2014 Module Not Loaded",
         "description": (
             "NVIDIA driver package is installed but the kernel module "
-            "is not loaded. This usually means the DKMS module wasn\u2019t "
-            "built for your current kernel, or the module failed to load.\n\n"
-            "Try running: sudo dkms autoinstall"
+            "is not loaded. Verde can diagnose and fix this automatically."
         ),
         "icon": "dialog-warning-symbolic",
         "action": "View Drivers",
+        "fix_action": "Fix",
     },
     "daemon_unreachable": {
         "title": "System Service Unavailable",
@@ -180,9 +196,10 @@ else:
             self.set_title("Dashboard")
             self.set_icon_name("speedometer-symbolic")
 
-        def bind_state(self, gpu_state: GPUState) -> None:
+        def bind_state(self, gpu_state: GPUState, dbus_client=None) -> None:
             """Build dashboard UI and bind to GPUState properties."""
             self._gpu_state = gpu_state
+            self._dbus_client = dbus_client
             self._degraded_group: Adw.PreferencesGroup | None = None
             self._monitoring_groups: list[Adw.PreferencesGroup] = []
             self._current_view = "monitoring"
@@ -636,13 +653,28 @@ else:
             status_page.set_title(info["title"])
             status_page.set_description(info["description"])
 
-            if info.get("action"):
-                btn = Gtk.Button(label=info["action"])
-                btn.add_css_class("suggested-action")
-                btn.add_css_class("pill")
-                btn.set_halign(Gtk.Align.CENTER)
-                btn.connect("clicked", self._on_degraded_action_clicked)
-                status_page.set_child(btn)
+            if info.get("action") or info.get("fix_action"):
+                btn_box = Gtk.Box(
+                    orientation=Gtk.Orientation.HORIZONTAL,
+                    halign=Gtk.Align.CENTER,
+                    spacing=12,
+                )
+                if info.get("fix_action"):
+                    fix_btn = Gtk.Button(label=info["fix_action"])
+                    fix_btn.add_css_class("suggested-action")
+                    fix_btn.add_css_class("pill")
+                    fix_btn.connect("clicked", self._on_fix_module_clicked)
+                    fix_btn.update_property(
+                        [Gtk.AccessibleProperty.LABEL],
+                        [_("Fix module not loaded issue")],
+                    )
+                    btn_box.append(fix_btn)
+                if info.get("action"):
+                    nav_btn = Gtk.Button(label=info["action"])
+                    nav_btn.add_css_class("pill")
+                    nav_btn.connect("clicked", self._on_degraded_action_clicked)
+                    btn_box.append(nav_btn)
+                status_page.set_child(btn_box)
 
             self._degraded_group.add(status_page)
             self.add(self._degraded_group)
@@ -655,6 +687,103 @@ else:
                 page = page.get_parent()
             if isinstance(page, Adw.ViewStack):
                 page.set_visible_child_name("drivers")
+
+        def _on_fix_module_clicked(self, _btn: Gtk.Button) -> None:
+            """Handle Fix button click for module-not-loaded state (Story 2.7)."""
+            if self._dbus_client is None:
+                return
+
+            window = self.get_root()
+
+            # First diagnose, then show preflight dialog
+            def _on_diagnosis_reply(proxy, result):
+                try:
+                    reply = proxy.call_finish(result)
+                    diag = reply.unpack()[0]
+                    GLib.idle_add(self._show_module_fix_dialog, window, diag)
+                except GLib.Error as exc:
+                    log.warning("DiagnoseModuleFailure failed: %s", exc.message)
+
+            self._dbus_client.call_method_async(
+                "DiagnoseModuleFailure",
+                None,
+                _on_diagnosis_reply,
+            )
+
+        def _show_module_fix_dialog(self, window, diag: dict) -> bool:
+            """Show the module fix pre-flight dialog."""
+            from verde.widgets.preflight_banner import PreflightPanel
+
+            diag.get("cause", "unknown")
+            detail = diag.get("detail", "")
+            fixable = diag.get("fixable", False)
+            fix_actions = diag.get("fix_actions", [])
+            reboot_required = diag.get("reboot_required", False)
+
+            dialog = Adw.MessageDialog.new(window, _("Module Not Loaded"))
+            dialog.set_body(detail)
+            dialog.set_body_use_markup(False)
+
+            if fixable:
+                preflight = PreflightPanel()
+                checks = []
+                for action in fix_actions:
+                    checks.append({"name": action, "status": "action", "description": ""})
+                preflight.set_checks(checks)
+                dialog.set_extra_child(preflight)
+
+                dialog.add_response("cancel", _("Cancel"))
+                dialog.add_response("fix", _("Fix"))
+                dialog.set_response_appearance("fix", Adw.ResponseAppearance.SUGGESTED)
+                dialog.set_default_response("cancel")
+                dialog.set_close_response("cancel")
+                dialog.connect("response", self._on_module_fix_response)
+            else:
+                dialog.add_response("close", _("Close"))
+                dialog.set_default_response("close")
+                dialog.set_close_response("close")
+
+            if reboot_required:
+                dialog.set_body(
+                    detail + "\n\n" + _("A reboot will be required after the fix is applied.")
+                )
+
+            dialog.present()
+            return GLib.SOURCE_REMOVE
+
+        def _on_module_fix_response(self, dialog: Adw.MessageDialog, response: str) -> None:
+            """Handle module fix dialog confirmation."""
+            if response != "fix" or self._dbus_client is None:
+                return
+
+            from verde.widgets.progress_overlay import OperationProgressPanel
+
+            progress = OperationProgressPanel()
+            progress.set_stage(_("Starting fix\u2026"), 0.0)
+            dialog.set_extra_child(progress)
+            dialog.set_heading(_("Fixing Module"))
+            dialog.set_body("")
+            dialog.set_close_response("")
+            dialog.set_response_enabled("cancel", False)
+            dialog.set_response_enabled("fix", False)
+
+            def _on_reply(proxy, result):
+                try:
+                    reply = proxy.call_finish(result)
+                    op_id = reply.unpack()[0]
+                    dialog._op_id = op_id
+                    dialog._progress_panel = progress
+                except GLib.Error as exc:
+                    log.warning("FixModuleNotLoaded failed: %s", exc.message)
+                    progress.set_error(str(exc.message))
+                    dialog.set_close_response("cancel")
+                    dialog.set_response_enabled("cancel", True)
+
+            self._dbus_client.call_method_async(
+                "FixModuleNotLoaded",
+                None,
+                _on_reply,
+            )
 
         def show_gpu_lost_dialog(self, window: Gtk.Window) -> None:
             """Show a modal dialog when GPU is lost at runtime."""
