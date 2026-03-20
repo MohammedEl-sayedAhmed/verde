@@ -23,6 +23,7 @@ METHOD_ACTION_MAP: dict[str, str] = {
     "FixSuspend": "com.verde.power.manage",
     "FixHibernate": "com.verde.power.manage",
     "FixModuleNotLoaded": "com.verde.driver.manage",
+    "RevertModification": "com.verde.power.manage",
     "GenerateDiagnosticReport": "com.verde.diagnostics",
 }
 

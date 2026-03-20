@@ -30,6 +30,7 @@ class TestMethodActionMap:
         "FixSuspend",
         "FixHibernate",
         "FixModuleNotLoaded",
+        "RevertModification",
         "GenerateDiagnosticReport",
     }
 

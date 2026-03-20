@@ -12,6 +12,7 @@ import logging
 import re
 import subprocess
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger("verde-daemon.driver_manager")
 
@@ -76,8 +77,9 @@ class DriverManager:
     internally and logged.
     """
 
-    def __init__(self, gpu_name: str = "") -> None:
+    def __init__(self, gpu_name: str = "", tracker: Any = None) -> None:
         self._gpu_name = gpu_name
+        self._tracker = tracker
 
     # -- subprocess helper --------------------------------------------------
 

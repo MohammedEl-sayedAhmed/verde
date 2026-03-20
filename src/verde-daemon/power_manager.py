@@ -139,9 +139,11 @@ class PowerManager:
         read_file: Callable[[str], str] | None = None,
         list_modprobe_confs: Callable[[], list[str]] | None = None,
         write_file: Callable[[str, str], None] | None = None,
+        tracker: Any | None = None,
     ) -> None:
         self._run = run or _default_run
         self._read = read_file or _default_read_file
+        self._tracker = tracker
         self._list_modprobe_confs = list_modprobe_confs or _default_list_modprobe_confs
         self._write = write_file or _default_write_file
 
@@ -791,11 +793,20 @@ class PowerManager:
             for i, svc in enumerate(needs_enable):
                 pct = 30.0 + step_pct * i
                 progress_cb(op_id, pct, f"Enabling {svc}...")
+                was_enabled = self._is_service_enabled(svc)
                 ok, msg = self._enable_service(svc)
                 if not ok:
                     _completed = True
                     complete_cb(op_id, False, msg)
                     return
+                if self._tracker:
+                    self._tracker.record(
+                        op_id,
+                        "service_enabled",
+                        svc,
+                        "enabled" if was_enabled else "disabled",
+                        f"Enabled {svc} for suspend/resume fix",
+                    )
 
             # Step 4 (70-90%): Verify
             progress_cb(op_id, 75.0, "Verifying services are enabled...")
@@ -892,6 +903,14 @@ class PowerManager:
                     complete_cb(op_id, False, msg)
                     return
                 changes_made.append("Wrote modprobe config")
+                if self._tracker:
+                    self._tracker.record(
+                        op_id,
+                        "file_created",
+                        MODPROBE_CONF_PATH,
+                        None,
+                        "Created modprobe configuration for NVIDIA power management",
+                    )
 
             # Step 5 (50-70%): Enable hibernate service if needed
             if not service_enabled:
@@ -902,6 +921,14 @@ class PowerManager:
                     complete_cb(op_id, False, msg)
                     return
                 changes_made.append(f"Enabled {NVIDIA_HIBERNATE_SERVICE}")
+                if self._tracker:
+                    self._tracker.record(
+                        op_id,
+                        "service_enabled",
+                        NVIDIA_HIBERNATE_SERVICE,
+                        "disabled",
+                        f"Enabled {NVIDIA_HIBERNATE_SERVICE} for hibernate fix",
+                    )
 
                 # P-5: Verify service enablement (same pattern as fix_suspend)
                 if not self._is_service_enabled(NVIDIA_HIBERNATE_SERVICE):
@@ -922,6 +949,14 @@ class PowerManager:
                 complete_cb(op_id, False, msg)
                 return
             changes_made.append("Rebuilt initramfs")
+            if self._tracker:
+                self._tracker.record(
+                    op_id,
+                    "initramfs_rebuilt",
+                    "initramfs",
+                    None,
+                    "Rebuilt initramfs for hibernate fix",
+                )
 
             # Step 7 (90-100%): Verify and complete
             progress_cb(op_id, 95.0, "Hibernate fix complete.")

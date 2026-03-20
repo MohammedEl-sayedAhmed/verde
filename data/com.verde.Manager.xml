@@ -89,6 +89,15 @@
       <arg name="op_id" type="s" direction="out"/>
     </method>
 
+    <!-- Story 6.3: Modification tracking -->
+    <method name="ListModifications">
+      <arg name="modifications" type="aa{sv}" direction="out"/>
+    </method>
+    <method name="RevertModification">
+      <arg name="modification_id" type="s" direction="in"/>
+      <arg name="success" type="b" direction="out"/>
+    </method>
+
     <!-- Signals -->
     <signal name="DegradedStateChanged">
       <arg name="state_info" type="a{sv}"/>

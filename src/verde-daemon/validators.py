@@ -16,6 +16,10 @@ SNAPSHOT_ID_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}_[a-zA-Z0-9._-]+-[0-9a-f]{4
 OPERATION_NAME_PATTERN = re.compile(
     r"^(driver_install|driver_switch|driver_rollback|fix_suspend|fix_hibernate|fix_module)$"
 )
+MODIFICATION_ID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 def _check_length(value: str, label: str) -> None:
@@ -68,3 +72,16 @@ def validate_operation_name(operation: str) -> str:
         log.warning("Invalid operation name rejected")
         raise ValueError("Invalid operation name format")
     return operation
+
+
+def validate_modification_id(mod_id: str) -> str:
+    """Validate a modification ID string (UUID v4).
+
+    Returns the validated string on success, raises ValueError on failure.
+    """
+    _check_length(mod_id, "Modification ID")
+    _check_null_bytes(mod_id, "Modification ID")
+    if not MODIFICATION_ID_PATTERN.match(mod_id):
+        log.warning("Invalid modification ID rejected")
+        raise ValueError("Invalid modification ID format")
+    return mod_id

@@ -41,6 +41,7 @@ from verde_daemon.degraded_states import (
 from verde_daemon.diagnostics import DiagnosticCollector
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.integrity_checker import IntegrityChecker
+from verde_daemon.modification_tracker import ModificationTracker
 from verde_daemon.module_doctor import ModuleDoctor
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.pending_summary import PendingSummaryManager
@@ -58,6 +59,7 @@ from verde_daemon.snapshot_manager import SnapshotManager
 from verde_daemon.state_tracker import StateTracker
 from verde_daemon.validators import (
     validate_driver_version,
+    validate_modification_id,
     validate_operation_name,
     validate_snapshot_id,
 )
@@ -147,6 +149,9 @@ class VerdeService:
         except Exception:
             log.warning("NVML initialization failed — running in degraded mode")
 
+        # Modification tracker (Story 6.3) — instantiate early so managers can use it
+        self._modification_tracker = ModificationTracker()
+
         # Driver manager — injected for testing, created automatically otherwise
         if driver_manager is not None:
             self._driver_manager = driver_manager
@@ -158,7 +163,9 @@ class VerdeService:
                     name = self._nvml.get_device_name(handle)
                     if name is not Unavailable:
                         gpu_name = name
-            self._driver_manager = DriverManager(gpu_name=gpu_name)
+            self._driver_manager = DriverManager(
+                gpu_name=gpu_name, tracker=self._modification_tracker
+            )
 
         # Pre-flight checker
         self._preflight = PreflightChecker()
@@ -172,7 +179,7 @@ class VerdeService:
         self._pending_summary = PendingSummaryManager()
 
         # Power manager (Story 4.1)
-        self._power_manager = PowerManager()
+        self._power_manager = PowerManager(tracker=self._modification_tracker)
 
         # Diagnostic collector (Story 5.1)
         self._diagnostics = DiagnosticCollector(nvml=self._nvml)
@@ -553,6 +560,10 @@ class VerdeService:
             self._on_idle_reset()
             self._dispatch_get_integrity_status(invocation)
             return
+        if method_name == "ListModifications":
+            self._on_idle_reset()
+            self._dispatch_list_modifications(invocation)
+            return
 
         # GetPreflightCheck is read-only (AR-4) — no Polkit auth required.
         # Validate input and dispatch before the auth gate.
@@ -694,6 +705,11 @@ class VerdeService:
         # Module fix (Story 2.7)
         if method_name == "FixModuleNotLoaded":
             self._dispatch_fix_module(invocation, sender)
+            return
+
+        # Modification revert (Story 6.3)
+        if method_name == "RevertModification":
+            self._dispatch_revert_modification(parameters, invocation, sender)
             return
 
         # Diagnostic report generation (Story 5.1)
@@ -1507,6 +1523,87 @@ class VerdeService:
                 "com.verde.Error.InternalError",
                 "Internal error while running module pre-flight check.",
             )
+
+    # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Modification tracking dispatch (Story 6.3)
+    # ------------------------------------------------------------------
+
+    def _dispatch_list_modifications(
+        self,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle ListModifications: return active modifications as aa{sv}."""
+        try:
+            mods = self._modification_tracker.list_active()
+            gv_mods = []
+            for m in mods:
+                gv_mods.append(
+                    {
+                        "id": GLib.Variant("s", m.get("id", "")),
+                        "operation_id": GLib.Variant("s", m.get("operation_id", "")),
+                        "timestamp": GLib.Variant("s", m.get("timestamp", "")),
+                        "type": GLib.Variant("s", m.get("type", "")),
+                        "target": GLib.Variant("s", m.get("target", "")),
+                        "original_state": GLib.Variant("s", m.get("original_state") or ""),
+                        "description": GLib.Variant("s", m.get("description", "")),
+                        "active": GLib.Variant("b", m.get("active", False)),
+                    }
+                )
+            invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("aa{sv}", gv_mods)))
+        except Exception:
+            log.exception("ListModifications dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while listing modifications.",
+            )
+
+    def _dispatch_revert_modification(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle RevertModification: validate ID, revert, return success."""
+        try:
+            mod_id = parameters.get_child_value(0).get_string()
+            validate_modification_id(mod_id)
+        except ValueError as exc:
+            if self._audit:
+                self._audit.log(
+                    "VALIDATION_FAILURE",
+                    {"method": "RevertModification"},
+                    sender,
+                    "rejected",
+                )
+            invocation.return_dbus_error(
+                "com.verde.Error.InvalidArgument",
+                str(exc),
+            )
+            return
+
+        success = self._modification_tracker.revert(mod_id)
+        if not success:
+            # Check if it exists at all
+            all_mods = self._modification_tracker.list_all()
+            exists = any(m["id"] == mod_id for m in all_mods)
+            if not exists:
+                invocation.return_dbus_error(
+                    "com.verde.Error.ModificationNotFound",
+                    "No modification found with the given ID.",
+                )
+                return
+
+        if self._audit:
+            self._audit.log(
+                "REVERT_MODIFICATION",
+                {"modification_id": mod_id},
+                sender,
+                "success" if success else "failed",
+            )
+
+        invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("b", success)))
 
     # ------------------------------------------------------------------
 
