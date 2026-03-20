@@ -14,6 +14,7 @@ daemon_sources = [
   'apt_errors.py',
   'audit.py',
   'degraded_states.py',
+  'diagnostics.py',
   'driver_manager.py',
   'nvml_wrapper.py',
   'pending_summary.py',

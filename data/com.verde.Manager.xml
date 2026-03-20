@@ -27,6 +27,7 @@
       <arg name="status" type="a{sv}" direction="out"/>
     </method>
     <method name="GenerateDiagnosticReport">
+      <arg name="format" type="s" direction="in"/>
       <arg name="report" type="s" direction="out"/>
     </method>
     <method name="GetPreflightCheck">

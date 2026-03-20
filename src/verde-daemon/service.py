@@ -26,6 +26,7 @@ from verde_daemon.apt_errors import (
 from verde_daemon.audit import (
     OP_FIX_HIBERNATE,
     OP_FIX_SUSPEND,
+    OP_GENERATE_DIAGNOSTIC,
     OP_INSTALL_DRIVER,
     OP_ROLLBACK_DRIVER,
     AuditLogger,
@@ -36,6 +37,7 @@ from verde_daemon.degraded_states import (
     detect_degraded_state,
     detect_driver_type,
 )
+from verde_daemon.diagnostics import DiagnosticCollector
 from verde_daemon.driver_manager import DriverManager
 from verde_daemon.nvml_wrapper import NvmlWrapper, Unavailable
 from verde_daemon.pending_summary import PendingSummaryManager
@@ -166,6 +168,9 @@ class VerdeService:
 
         # Power manager (Story 4.1)
         self._power_manager = PowerManager()
+
+        # Diagnostic collector (Story 5.1)
+        self._diagnostics = DiagnosticCollector(nvml=self._nvml)
 
         # Degraded state tracking — re-detected each poll cycle.
         # Check whether a driver package is installed (even if the kernel
@@ -514,6 +519,11 @@ class VerdeService:
             return
         if method_name == "FixHibernate":
             self._dispatch_fix_hibernate(invocation, sender)
+            return
+
+        # Diagnostic report generation (Story 5.1)
+        if method_name == "GenerateDiagnosticReport":
+            self._dispatch_generate_diagnostic(parameters, invocation, sender)
             return
 
         # Remaining methods — stubs until actual implementations
@@ -1123,6 +1133,58 @@ class VerdeService:
             invocation.return_dbus_error(
                 "com.verde.Error.InternalError",
                 "Internal error while running power pre-flight check.",
+            )
+
+    # ------------------------------------------------------------------
+    # Diagnostic report dispatch (Story 5.1)
+    # ------------------------------------------------------------------
+
+    def _dispatch_generate_diagnostic(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+        sender: str,
+    ) -> None:
+        """Handle GenerateDiagnosticReport: validate format, generate report."""
+        fmt = ""
+        try:
+            fmt = parameters.get_child_value(0).get_string() if parameters else ""
+            if not fmt:
+                fmt = "markdown"
+
+            if fmt not in ("markdown", "json"):
+                invocation.return_dbus_error(
+                    "com.verde.Error.InvalidArgument",
+                    f"Invalid format: {fmt!r}. Must be 'markdown' or 'json'.",
+                )
+                return
+
+            report = self._diagnostics.generate(fmt)
+
+            if self._audit:
+                self._audit.log(
+                    OP_GENERATE_DIAGNOSTIC,
+                    {"format": fmt},
+                    sender,
+                    "success",
+                )
+
+            invocation.return_value(
+                GLib.Variant.new_tuple(GLib.Variant("s", report)),
+            )
+        except Exception:
+            log.exception("GenerateDiagnosticReport dispatch failed")
+            if self._audit:
+                self._audit.log(
+                    OP_GENERATE_DIAGNOSTIC,
+                    {"format": fmt or "unknown"},
+                    sender,
+                    "failed",
+                    error="Internal error during report generation",
+                )
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while generating diagnostic report.",
             )
 
     # ------------------------------------------------------------------
