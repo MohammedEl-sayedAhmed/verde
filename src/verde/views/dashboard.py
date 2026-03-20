@@ -749,7 +749,7 @@ else:
                 )
 
             dialog.present()
-            return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         def _on_module_fix_response(self, dialog: Adw.MessageDialog, response: str) -> None:
             """Handle module fix dialog confirmation."""
