@@ -24,6 +24,40 @@ locale.textdomain("verde")
 gettext.install("verde", LOCALEDIR)
 
 if __name__ == "__main__":
+    # ── CLI mode: intercept --check/--json before GTK init ──
+    _cli_args = set(sys.argv[1:])
+    if "--check" in _cli_args or "--json" in _cli_args:
+        from verde.cli import run_check, run_status_json
+
+        if "--check" in _cli_args:
+            sys.exit(run_check(use_json="--json" in _cli_args))
+        else:
+            # --json without --check: full status dump
+            sys.exit(run_status_json())
+
+    if "--version" in _cli_args:
+        sys.stdout.write(f"verde {VERSION}\n")
+        sys.exit(0)
+
+    if "--help" in _cli_args:
+        sys.stdout.write(
+            f"verde {VERSION}\n"
+            "Usage: verde [OPTIONS]\n\n"
+            "Options:\n"
+            "  --check     Run health check and exit (no GUI)\n"
+            "  --json      Output in JSON format (use with --check for health, alone for full status)\n"
+            "  --version   Show version and exit\n"
+            "  --help      Show this help and exit\n\n"
+            "Exit codes (--check mode):\n"
+            "  0  Healthy — all GPUs within normal parameters\n"
+            "  1  Warning — temperature 85-95°C, throttling, or VRAM >90%%\n"
+            "  2  Critical — temperature >95°C, GPU off bus, or driver not loaded\n"
+            "  3  No GPU — no NVIDIA GPU detected\n"
+            "  4  Error — daemon unreachable or unexpected failure\n"
+        )
+        sys.exit(0)
+
+    # ── GUI mode ──
     import gi
 
     gi.require_version("Gtk", "4.0")
