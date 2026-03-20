@@ -116,9 +116,7 @@ class DiagnosticsPage(Adw.PreferencesPage):
         self._signal_handler_ids.append(
             (
                 dbus_client,
-                dbus_client.connect(
-                    "notify::connected", self._on_connection_changed
-                ),
+                dbus_client.connect("notify::connected", self._on_connection_changed),
             )
         )
 
@@ -132,9 +130,7 @@ class DiagnosticsPage(Adw.PreferencesPage):
 
     # ── Connection handling ───────────────────────────────────────────
 
-    def _on_connection_changed(
-        self, client: VerdeDBusClient, _pspec
-    ) -> None:
+    def _on_connection_changed(self, client: VerdeDBusClient, _pspec) -> None:
         if client.get_property("connected"):
             self._show_data_groups()
             self._load_diagnostics()
@@ -158,19 +154,11 @@ class DiagnosticsPage(Adw.PreferencesPage):
     def _load_diagnostics(self) -> None:
         if self._dbus_client is None:
             return
-        self._dbus_client.call_method_async(
-            "GetGPUInfo", None, self._on_gpu_info_reply
-        )
-        self._dbus_client.call_method_async(
-            "GetCurrentDriver", None, self._on_driver_reply
-        )
-        self._dbus_client.call_method_async(
-            "GetDegradedState", None, self._on_state_reply
-        )
+        self._dbus_client.call_method_async("GetGPUInfo", None, self._on_gpu_info_reply)
+        self._dbus_client.call_method_async("GetCurrentDriver", None, self._on_driver_reply)
+        self._dbus_client.call_method_async("GetDegradedState", None, self._on_state_reply)
 
-    def _on_gpu_info_reply(
-        self, proxy: Gio.DBusProxy, result: Gio.AsyncResult
-    ) -> None:
+    def _on_gpu_info_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
         try:
             reply = proxy.call_finish(result)
             data = reply.unpack()[0]
@@ -179,9 +167,7 @@ class DiagnosticsPage(Adw.PreferencesPage):
             log.warning("GetGPUInfo failed: %s", exc.message)
             GLib.idle_add(self._gpu_info_error)
 
-    def _on_driver_reply(
-        self, proxy: Gio.DBusProxy, result: Gio.AsyncResult
-    ) -> None:
+    def _on_driver_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
         try:
             reply = proxy.call_finish(result)
             data = reply.unpack()[0]
@@ -190,9 +176,7 @@ class DiagnosticsPage(Adw.PreferencesPage):
             log.warning("GetCurrentDriver failed: %s", exc.message)
             GLib.idle_add(self._driver_info_error)
 
-    def _on_state_reply(
-        self, proxy: Gio.DBusProxy, result: Gio.AsyncResult
-    ) -> None:
+    def _on_state_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
         try:
             reply = proxy.call_finish(result)
             data = reply.unpack()[0]
@@ -215,34 +199,26 @@ class DiagnosticsPage(Adw.PreferencesPage):
         if name:
             self._gpu_group.add(_make_row(_("GPU"), str(name)))
         else:
-            self._gpu_group.add(
-                _make_row(_("GPU"), _("Not detected (NVML unavailable)"))
-            )
+            self._gpu_group.add(_make_row(_("GPU"), _("Not detected (NVML unavailable)")))
 
         if pci_bus:
             self._gpu_group.add(_make_row(_("PCI Bus"), str(pci_bus)))
 
         if device_count:
-            self._gpu_group.add(
-                _make_row(_("Device Count"), str(device_count))
-            )
+            self._gpu_group.add(_make_row(_("Device Count"), str(device_count)))
 
         nvml_status = _("Available") if available else _("Unavailable")
         reason = data.get("reason", "")
         if reason:
             nvml_status += f" ({reason})"
-        self._gpu_group.add(
-            _make_status_row(_("NVML"), nvml_status, available)
-        )
+        self._gpu_group.add(_make_status_row(_("NVML"), nvml_status, available))
 
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _gpu_info_error(self) -> bool:
         self._gpu_group.remove(self._gpu_loading_row)
         self._gpu_spinner.set_spinning(False)
-        self._gpu_group.add(
-            _make_row(_("GPU"), _("Failed to load GPU info"))
-        )
+        self._gpu_group.add(_make_row(_("GPU"), _("Failed to load GPU info")))
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _populate_driver_info(self, data: dict) -> bool:
@@ -257,19 +233,13 @@ class DiagnosticsPage(Adw.PreferencesPage):
         variant = data.get("variant", "")
 
         if version:
-            self._driver_group.add(
-                _make_row(_("Driver Version"), str(version))
-            )
+            self._driver_group.add(_make_row(_("Driver Version"), str(version)))
         else:
-            self._driver_group.add(
-                _make_row(_("Driver"), _("Not installed"))
-            )
+            self._driver_group.add(_make_row(_("Driver"), _("Not installed")))
             return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
         if package_name:
-            self._driver_group.add(
-                _make_row(_("Package"), str(package_name))
-            )
+            self._driver_group.add(_make_row(_("Package"), str(package_name)))
 
         self._driver_group.add(
             _make_status_row(
@@ -280,28 +250,20 @@ class DiagnosticsPage(Adw.PreferencesPage):
         )
 
         if driver_type and driver_type != "none":
-            self._driver_group.add(
-                _make_row(_("Driver Type"), str(driver_type))
-            )
+            self._driver_group.add(_make_row(_("Driver Type"), str(driver_type)))
 
         if module_type:
-            self._driver_group.add(
-                _make_row(_("Module Type"), str(module_type))
-            )
+            self._driver_group.add(_make_row(_("Module Type"), str(module_type)))
 
         if variant:
-            self._driver_group.add(
-                _make_row(_("Variant"), str(variant).capitalize())
-            )
+            self._driver_group.add(_make_row(_("Variant"), str(variant).capitalize()))
 
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _driver_info_error(self) -> bool:
         self._driver_group.remove(self._driver_loading_row)
         self._driver_spinner.set_spinning(False)
-        self._driver_group.add(
-            _make_row(_("Driver"), _("Failed to load driver info"))
-        )
+        self._driver_group.add(_make_row(_("Driver"), _("Failed to load driver info")))
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _populate_state_info(self, data: dict) -> bool:
@@ -309,9 +271,6 @@ class DiagnosticsPage(Adw.PreferencesPage):
 
         state = data.get("state", "unknown")
         message = data.get("message", "")
-        driver_type = data.get("driver_type", "")
-        device_count = data.get("device_count", 0)
-
         is_ok = state in ("normal", "healthy")
         label = str(state).replace("_", " ").title()
         self._state_group.add(_make_status_row(_("State"), label, is_ok))
@@ -323,21 +282,15 @@ class DiagnosticsPage(Adw.PreferencesPage):
         drv_ver = data.get("driver_version", "")
         pkg_name = data.get("package_name", "")
         if drv_ver:
-            self._state_group.add(
-                _make_row(_("Installed Version"), str(drv_ver))
-            )
+            self._state_group.add(_make_row(_("Installed Version"), str(drv_ver)))
         if pkg_name:
-            self._state_group.add(
-                _make_row(_("Installed Package"), str(pkg_name))
-            )
+            self._state_group.add(_make_row(_("Installed Package"), str(pkg_name)))
 
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
     def _state_info_error(self) -> bool:
         self._state_group.remove(self._state_loading_row)
-        self._state_group.add(
-            _make_row(_("State"), _("Failed to load health status"))
-        )
+        self._state_group.add(_make_row(_("State"), _("Failed to load health status")))
         return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
 

@@ -177,7 +177,8 @@ class VerdeService:
         except Exception:
             self._driver_installed = False
         self._current_degraded_state: DegradedState = detect_degraded_state(
-            self._nvml, driver_installed=self._driver_installed,
+            self._nvml,
+            driver_installed=self._driver_installed,
         )
 
         # Load introspection XML
@@ -276,7 +277,8 @@ class VerdeService:
 
             # Re-detect degraded state each cycle; emit signal on change
             new_state = detect_degraded_state(
-                self._nvml, driver_installed=self._driver_installed,
+                self._nvml,
+                driver_installed=self._driver_installed,
             )
             # GPU-lost override: if GPU was available and now stats say lost
             if stats.get("gpu_lost") and stats["gpu_lost"].get_boolean():
@@ -1884,14 +1886,16 @@ class VerdeService:
         result: dict[str, GLib.Variant] = {
             "available": GLib.Variant("b", False),
             "reason": GLib.Variant(
-                "s", "Driver installed but kernel module not loaded",
+                "s",
+                "Driver installed but kernel module not loaded",
             ),
         }
 
         if driver_info.get("version"):
             result["driver_version"] = GLib.Variant("s", driver_info["version"])
         result["driver_type"] = GLib.Variant(
-            "s", driver_info.get("driver_type", "none"),
+            "s",
+            driver_info.get("driver_type", "none"),
         )
         result["loaded"] = GLib.Variant("b", False)
 
@@ -1900,7 +1904,8 @@ class VerdeService:
             result["name"] = GLib.Variant("s", gpus[0].get("name", "NVIDIA GPU"))
             result["device_count"] = GLib.Variant("i", len(gpus))
             result["pci_bus_id"] = GLib.Variant(
-                "s", gpus[0].get("pci_bus_id", ""),
+                "s",
+                gpus[0].get("pci_bus_id", ""),
             )
         return result
 
@@ -2220,7 +2225,8 @@ class VerdeService:
                     result["driver_version"] = GLib.Variant("s", drv["version"])
                 if drv.get("package_name"):
                     result["package_name"] = GLib.Variant(
-                        "s", drv["package_name"],
+                        "s",
+                        drv["package_name"],
                     )
             except Exception:
                 log.debug("Could not enrich degraded state with driver info")

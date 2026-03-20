@@ -26,7 +26,7 @@ def _load_nvidia_pci_names() -> dict[str, str]:
     Returns a mapping of lowercase hex device-id → human-readable name.
     The result is cached for the lifetime of the process.
     """
-    global _pci_names_cache  # noqa: PLW0603
+    global _pci_names_cache
     if _pci_names_cache is not None:
         return _pci_names_cache
 
@@ -63,10 +63,10 @@ def detect_nvidia_gpus_sysfs() -> list[dict[str, str]]:
 
     Returns a list of dicts with keys:
 
-    * ``name`` – human-readable GPU name (from pci.ids, or a fallback)
-    * ``pci_bus_id`` – sysfs slot name (e.g. ``0000:03:00.0``)
-    * ``vendor_id`` – always ``10de``
-    * ``device_id`` – raw hex device id (e.g. ``0x1341``)
+    * ``name`` - human-readable GPU name (from pci.ids, or a fallback)
+    * ``pci_bus_id`` - sysfs slot name (e.g. ``0000:03:00.0``)
+    * ``vendor_id`` - always ``10de``
+    * ``device_id`` - raw hex device id (e.g. ``0x1341``)
     """
     gpus: list[dict[str, str]] = []
     if not _PCI_DEVICES.is_dir():
@@ -86,9 +86,7 @@ def detect_nvidia_gpus_sysfs() -> list[dict[str, str]]:
                     continue
                 device_id = (device_dir / "device").read_text().strip()
                 dev_id_short = device_id.lstrip("0x").lower()
-                gpu_name = pci_names.get(
-                    dev_id_short, f"NVIDIA GPU ({device_id})"
-                )
+                gpu_name = pci_names.get(dev_id_short, f"NVIDIA GPU ({device_id})")
                 gpus.append(
                     {
                         "name": gpu_name,

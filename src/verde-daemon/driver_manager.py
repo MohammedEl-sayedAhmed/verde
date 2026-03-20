@@ -83,7 +83,10 @@ class DriverManager:
 
     @staticmethod
     def _run_cmd(
-        cmd: list[str], timeout: int = 30, *, quiet: bool = False,
+        cmd: list[str],
+        timeout: int = 30,
+        *,
+        quiet: bool = False,
     ) -> subprocess.CompletedProcess | None:
         """Run a subprocess command with error handling.
 
@@ -556,19 +559,14 @@ class DriverManager:
             # Enumerate dpkg packages to find an installed nvidia-driver-*.
             pkgs = self._enumerate_nvidia_packages()
             for pkg in pkgs:
-                if (
-                    pkg["status"].startswith("ii")
-                    and pkg["package_name"].startswith("nvidia-driver-")
+                if pkg["status"].startswith("ii") and pkg["package_name"].startswith(
+                    "nvidia-driver-"
                 ):
-                    ver_match = re.search(
-                        r"nvidia-driver-(\d+)", pkg["package_name"]
-                    )
+                    ver_match = re.search(r"nvidia-driver-(\d+)", pkg["package_name"])
                     if ver_match:
                         result["version"] = ver_match.group(1)
                         result["package_name"] = pkg["package_name"]
-                        result["variant"] = self._detect_driver_variant(
-                            pkg["package_name"]
-                        )
+                        result["variant"] = self._detect_driver_variant(pkg["package_name"])
                         result["driver_type"] = "package"
                         result["loaded"] = False
                         # Determine module_type from associated packages
