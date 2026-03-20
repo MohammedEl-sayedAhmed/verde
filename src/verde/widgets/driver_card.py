@@ -25,11 +25,12 @@ def build_driver_row(
     Adw.ActionRow
         Configured row ready to add to a PreferencesGroup.
     """
-    package = driver.get("package", "nvidia-driver")
+    package = driver.get("package_name", "") or driver.get("package", "nvidia-driver")
     version = driver.get("version", "")
     variant = driver.get("variant", "proprietary")
     recommended = driver.get("recommended", False)
     held = driver.get("held", False)
+    module_type = driver.get("module_type", "")
 
     row = Adw.ActionRow()
     row.set_title(package)
@@ -39,7 +40,10 @@ def build_driver_row(
             _("Package held — run `sudo apt-mark unhold {}` to allow updates").format(package)
         )
     else:
-        row.set_subtitle(_("Version {} - {}").format(version, variant.capitalize()))
+        label = _("Version {} - {}").format(version, variant.capitalize())
+        if module_type == "kernel-open" or "-open" in package:
+            label += _(" - Open Kernel")
+        row.set_subtitle(label)
     row.add_css_class("verde-technical")
 
     # Suffix box: optional recommended badge + install button
