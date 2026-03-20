@@ -33,7 +33,7 @@ except NameError:
 def _sanitize_dbus_error(error_text: str) -> str:
     """Convert raw D-Bus/GLib errors into user-friendly messages."""
     if not error_text:
-        return _("An unexpected error occurred")
+        return _("An unexpected error occurred")  # type: ignore[used-before-def]
     # GLib D-Bus errors look like "GDBus.Error:com.verde.Error.Name: message"
     if error_text.startswith("GDBus.Error:") and ": " in error_text:
         # Strip the "GDBus.Error:domain.name: " prefix
