@@ -176,6 +176,7 @@ class VerdeDBusClient(GObject.Object):
         "InstallDriver",
         "RollbackDriver",
         "RepairDpkg",
+        "GenerateDiagnosticReport",
     }
 
     def call_method_async(

@@ -1,9 +1,10 @@
-"""Diagnostics view — driver-independent system info and health checks."""
+"""Diagnostics view — system info, health checks, and report generation."""
 
 from __future__ import annotations
 
 import logging
 import platform
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
@@ -14,8 +15,37 @@ if TYPE_CHECKING:
 
 log = logging.getLogger("verde.diagnostics")
 
-# i18n stub
-_ = str
+
+# gettext stub
+try:
+    _("test")  # type: ignore[used-before-def]
+except NameError:
+    import builtins
+
+    if not hasattr(builtins, "_"):
+
+        def _(s: str) -> str:
+            return s
+
+        builtins._ = _  # type: ignore[attr-defined]
+
+
+def _sanitize_dbus_error(error_text: str) -> str:
+    """Convert raw D-Bus/GLib errors into user-friendly messages."""
+    if not error_text:
+        return _("An unexpected error occurred")
+    # GLib D-Bus errors look like "GDBus.Error:com.verde.Error.Name: message"
+    if error_text.startswith("GDBus.Error:") and ": " in error_text:
+        # Strip the "GDBus.Error:domain.name: " prefix
+        _, _, rest = error_text.partition(": ")
+        if ": " in rest:
+            _, _, message = rest.partition(": ")
+            return message
+        return rest
+    # Older format: "g-io-error-quark: message"
+    if ": " in error_text and error_text.startswith("g-"):
+        error_text = error_text.split(": ", 1)[1]
+    return error_text
 
 
 def _has_resource(path: str) -> bool:
@@ -105,6 +135,73 @@ class DiagnosticsPage(Adw.PreferencesPage):
         )
         self._unreachable_group.add(self._unreachable_status)
 
+        # ── Report Generation group ──
+        self._report_gen_group = Adw.PreferencesGroup(
+            title=_("Diagnostic Report"),
+            description=_(
+                "Generate a comprehensive system report for sharing on forums or with support."
+            ),
+        )
+        self.add(self._report_gen_group)
+
+        self._generate_btn = Gtk.Button(label=_("Generate Report"))
+        self._generate_btn.add_css_class("suggested-action")
+        self._generate_btn.set_halign(Gtk.Align.CENTER)
+        self._generate_btn.connect("clicked", self._on_generate_clicked)
+        self._generate_btn.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Generate a diagnostic report")],
+        )
+        self._report_gen_group.add(self._generate_btn)
+
+        self._generate_spinner = Gtk.Spinner()
+        self._generate_spinner.set_visible(False)
+        self._generate_spinner.set_halign(Gtk.Align.CENTER)
+        self._report_gen_group.add(self._generate_spinner)
+
+        # ── Report Card group (hidden until report generated) ──
+        self._report_card_group = Adw.PreferencesGroup(
+            title=_("Report Generated"),
+        )
+        self._report_card_group.set_visible(False)
+        self.add(self._report_card_group)
+
+        self._timestamp_row = Adw.ActionRow(title=_("Generated"))
+        self._timestamp_row.set_subtitle("")
+        self._copy_btn = Gtk.Button(label=_("Copy to Clipboard"))
+        self._copy_btn.set_valign(Gtk.Align.CENTER)
+        self._copy_btn.connect("clicked", self._on_copy_clicked)
+        self._copy_btn.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Copy report to clipboard")],
+        )
+        self._timestamp_row.add_suffix(self._copy_btn)
+        self._report_card_group.add(self._timestamp_row)
+
+        self._preview_expander = Adw.ExpanderRow(title=_("Preview"))
+        self._preview_expander.set_show_enable_switch(False)
+        self._preview_expander.set_expanded(False)
+        self._preview_expander.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Expand to preview diagnostic report")],
+        )
+        self._report_card_group.add(self._preview_expander)
+
+        self._preview_label = Gtk.Label()
+        self._preview_label.set_selectable(True)
+        self._preview_label.set_wrap(True)
+        self._preview_label.set_xalign(0.0)
+        self._preview_label.add_css_class("monospace")
+        self._preview_label.set_margin_start(12)
+        self._preview_label.set_margin_end(12)
+        self._preview_label.set_margin_top(6)
+        self._preview_label.set_margin_bottom(6)
+        self._preview_expander.add_row(Adw.ActionRow(child=self._preview_label))
+
+        # Internal state
+        self._report_text: str = ""
+        self._generating: bool = False
+
     # ── State binding ─────────────────────────────────────────────────
 
     def bind_state(self, gpu_state: GPUState, dbus_client: VerdeDBusClient) -> None:
@@ -148,6 +245,117 @@ class DiagnosticsPage(Adw.PreferencesPage):
         self._gpu_group.set_visible(True)
         self._driver_group.set_visible(True)
         self._state_group.set_visible(True)
+
+    # ── Report generation ─────────────────────────────────────────────
+
+    def _on_generate_clicked(self, _btn: Gtk.Button) -> None:
+        """Handle Generate Report button click — async D-Bus call on main thread."""
+        if self._generating or self._dbus_client is None:
+            return
+
+        self._generating = True
+        self._generate_btn.set_sensitive(False)
+        self._generate_spinner.set_visible(True)
+        self._generate_spinner.set_spinning(True)
+
+        # call_method_async is already non-blocking — no background thread needed
+        self._dbus_client.call_method_async(
+            "GenerateDiagnosticReport",
+            GLib.Variant("(s)", ("markdown",)),
+            self._on_generate_reply,
+        )
+
+    def _on_generate_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
+        """Handle D-Bus reply for GenerateDiagnosticReport."""
+        try:
+            reply = proxy.call_finish(result)
+            report = reply.unpack()[0]
+            self._on_report_received(report)
+        except GLib.Error as exc:
+            log.warning("GenerateDiagnosticReport failed: %s", exc.message)
+            self._on_generate_error(str(exc.message))
+
+    _PREVIEW_MAX_CHARS = 10_000
+
+    def _on_report_received(self, report_text: str) -> None:
+        """Handle successful report generation on main thread."""
+        self._generating = False
+        self._generate_btn.set_sensitive(True)
+        self._generate_spinner.set_spinning(False)
+        self._generate_spinner.set_visible(False)
+
+        self._report_text = report_text
+
+        # Update report card
+        now = datetime.now()
+        self._timestamp_row.set_subtitle(now.strftime("%Y-%m-%d %H:%M"))
+
+        # P-4: Cap preview to avoid Pango layout freeze on large reports
+        if len(report_text) > self._PREVIEW_MAX_CHARS:
+            preview = report_text[: self._PREVIEW_MAX_CHARS] + _(
+                "\n\n… (truncated — copy for full report)"
+            )
+        else:
+            preview = report_text
+        self._preview_label.set_text(preview)
+        self._report_card_group.set_visible(True)
+
+    def _on_generate_error(self, error_text: str) -> None:
+        """Handle report generation error on main thread."""
+        self._generating = False
+        self._generate_btn.set_sensitive(True)
+        self._generate_spinner.set_spinning(False)
+        self._generate_spinner.set_visible(False)
+
+        window = self.get_root()
+        if not isinstance(window, Adw.ApplicationWindow):
+            log.warning("Cannot show error dialog — no parent window")
+            return
+
+        dialog = Adw.MessageDialog.new(
+            window,
+            _("Report Generation Failed"),
+        )
+        dialog.set_body(_sanitize_dbus_error(error_text))
+        dialog.set_body_use_markup(False)
+        dialog.add_response("retry", _("Retry"))
+        dialog.add_response("close", _("Close"))
+        dialog.set_default_response("close")
+        dialog.set_close_response("close")
+        dialog.connect("response", self._on_error_dialog_response)
+        dialog.present()
+
+    def _on_error_dialog_response(
+        self,
+        dialog: Adw.MessageDialog,
+        response: str,
+    ) -> None:
+        """Handle error dialog response."""
+        dialog.destroy()
+        if response == "retry":
+            self._on_generate_clicked(self._generate_btn)
+
+    def _on_copy_clicked(self, _btn: Gtk.Button) -> None:
+        """Copy the report markdown to system clipboard."""
+        if not self._report_text:
+            return
+
+        display = self.get_display()
+        if display is None:
+            return
+
+        clipboard = display.get_clipboard()
+        clipboard.set(self._report_text)
+
+        # Show toast via the window's toast overlay
+        window = self.get_root()
+        if (
+            isinstance(window, Adw.ApplicationWindow)
+            and getattr(window, "toast_overlay", None) is not None
+        ):
+            toast = Adw.Toast(title=_("Report copied to clipboard"))
+            toast.set_timeout(3)
+            window.toast_overlay.add_toast(toast)
 
     # ── Data loading ──────────────────────────────────────────────────
 

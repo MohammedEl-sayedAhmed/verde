@@ -59,6 +59,9 @@ if _has_ui_resource():
         view_stack = Gtk.Template.Child()
         bottom_bar = Gtk.Template.Child()
         banner = Gtk.Template.Child()
+        # toast_overlay is only in the programmatic path; None here so
+        # hasattr checks work and toasts are silently skipped in Blueprint path.
+        toast_overlay: Adw.ToastOverlay | None = None
 
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
@@ -150,7 +153,9 @@ else:
                 page = page_class()
                 self.view_stack.add_titled_with_icon(page, name, title, icon)
 
-            box.append(self.view_stack)
+            self.toast_overlay = Adw.ToastOverlay()
+            self.toast_overlay.set_child(self.view_stack)
+            box.append(self.toast_overlay)
             box.append(self.bottom_bar)
 
             css_provider = Gtk.CssProvider()
