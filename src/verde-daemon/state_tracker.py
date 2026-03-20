@@ -141,11 +141,13 @@ class StateTracker:
         configs = []
         for path in MANAGED_CONFIGS:
             sha = file_sha256(path)
-            configs.append({
-                "path": path,
-                "sha256": sha,
-                "exists": sha is not None,
-            })
+            configs.append(
+                {
+                    "path": path,
+                    "sha256": sha,
+                    "exists": sha is not None,
+                }
+            )
         return configs
 
     # ── External change detection ─────────────────────────────────────
@@ -165,37 +167,43 @@ class StateTracker:
         current_ver = self._get_driver_version()
         prev_ver = self._previous_state.get("driver_version", "")
         if current_ver != prev_ver and (current_ver or prev_ver):
-            changes.append({
-                "change_type": "driver_version",
-                "field": "driver_version",
-                "old_value": prev_ver,
-                "new_value": current_ver,
-                "detected_at": now,
-            })
+            changes.append(
+                {
+                    "change_type": "driver_version",
+                    "field": "driver_version",
+                    "old_value": prev_ver,
+                    "new_value": current_ver,
+                    "detected_at": now,
+                }
+            )
 
         # Driver type
         current_type = self._get_driver_type()
         prev_type = self._previous_state.get("driver_type", "")
         if current_type != prev_type and current_type != "unknown":
-            changes.append({
-                "change_type": "driver_type",
-                "field": "driver_type",
-                "old_value": prev_type,
-                "new_value": current_type,
-                "detected_at": now,
-            })
+            changes.append(
+                {
+                    "change_type": "driver_type",
+                    "field": "driver_type",
+                    "old_value": prev_type,
+                    "new_value": current_type,
+                    "detected_at": now,
+                }
+            )
 
         # Kernel version
         current_kernel = os.uname().release
         prev_kernel = self._previous_state.get("kernel_version", "")
         if current_kernel != prev_kernel:
-            changes.append({
-                "change_type": "kernel_version",
-                "field": "kernel_version",
-                "old_value": prev_kernel,
-                "new_value": current_kernel,
-                "detected_at": now,
-            })
+            changes.append(
+                {
+                    "change_type": "kernel_version",
+                    "field": "kernel_version",
+                    "old_value": prev_kernel,
+                    "new_value": current_kernel,
+                    "detected_at": now,
+                }
+            )
 
         return changes
 
@@ -210,10 +218,7 @@ class StateTracker:
             return []
 
         issues: list[dict] = []
-        prev_configs = {
-            c["path"]: c
-            for c in self._previous_state.get("managed_configs", [])
-        }
+        prev_configs = {c["path"]: c for c in self._previous_state.get("managed_configs", [])}
 
         for path in MANAGED_CONFIGS:
             prev = prev_configs.get(path)
@@ -226,27 +231,33 @@ class StateTracker:
 
             if prev_exists and current_hash is None:
                 # File was deleted
-                issues.append({
-                    "file_path": path,
-                    "issue_type": "deleted",
-                    "expected_hash": prev_hash or "",
-                    "actual_hash": "",
-                })
+                issues.append(
+                    {
+                        "file_path": path,
+                        "issue_type": "deleted",
+                        "expected_hash": prev_hash or "",
+                        "actual_hash": "",
+                    }
+                )
             elif prev_exists and prev_hash and current_hash and current_hash != prev_hash:
                 # File was modified
-                issues.append({
-                    "file_path": path,
-                    "issue_type": "modified",
-                    "expected_hash": prev_hash,
-                    "actual_hash": current_hash,
-                })
+                issues.append(
+                    {
+                        "file_path": path,
+                        "issue_type": "modified",
+                        "expected_hash": prev_hash,
+                        "actual_hash": current_hash,
+                    }
+                )
             elif not prev_exists and current_hash is not None:
                 # File appeared (created externally)
-                issues.append({
-                    "file_path": path,
-                    "issue_type": "created_externally",
-                    "expected_hash": "",
-                    "actual_hash": current_hash,
-                })
+                issues.append(
+                    {
+                        "file_path": path,
+                        "issue_type": "created_externally",
+                        "expected_hash": "",
+                        "actual_hash": current_hash,
+                    }
+                )
 
         return issues
