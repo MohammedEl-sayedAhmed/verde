@@ -20,14 +20,16 @@ log = logging.getLogger("verde-daemon.rate-limiter")
 _STALE_TIMEOUT = 300.0  # seconds of inactivity before caller entry is purged
 
 # Methods classified as write/privileged
-WRITE_METHODS: frozenset[str] = frozenset({
-    "InstallDriver",
-    "RollbackDriver",
-    "FixSuspend",
-    "FixHibernate",
-    "RepairDpkg",
-    "DeleteSnapshot",
-})
+WRITE_METHODS: frozenset[str] = frozenset(
+    {
+        "InstallDriver",
+        "RollbackDriver",
+        "FixSuspend",
+        "FixHibernate",
+        "RepairDpkg",
+        "DeleteSnapshot",
+    }
+)
 
 
 @dataclass
