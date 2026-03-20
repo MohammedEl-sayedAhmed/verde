@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from verde.help_content import METRIC_TOOLTIPS
 from verde.widgets.driver_card import build_driver_row
 from verde.widgets.preflight_banner import PreflightPanel
 from verde.widgets.progress_overlay import OperationProgressPanel
@@ -106,9 +107,11 @@ class DriversPage(Adw.PreferencesPage):
         self._current_driver_group.add(self._current_driver_expander)
 
         self._current_driver_cuda_row = Adw.ActionRow(title=_("CUDA Compatibility"))
+        self._current_driver_cuda_row.set_tooltip_text(METRIC_TOOLTIPS["cuda_version"])
         self._current_driver_expander.add_row(self._current_driver_cuda_row)
 
         self._current_driver_context_row = Adw.ActionRow(title=_("Driver Context"))
+        self._current_driver_context_row.set_tooltip_text(METRIC_TOOLTIPS["driver_type"])
         self._current_driver_expander.add_row(self._current_driver_context_row)
 
         self._current_driver_kernel_row = Adw.ActionRow(title=_("Kernel Module"))

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from verde.help_content import METRIC_TOOLTIPS
 from verde.widgets.preflight_banner import PreflightPanel
 from verde.widgets.progress_overlay import OperationProgressPanel
 from verde.widgets.status_indicator import StatusIndicator
@@ -189,6 +190,9 @@ class PowerPage(Adw.PreferencesPage):
 
         self._power_mode_row = Adw.ActionRow(title=_("Power Profile"))
         self._power_mode_row.set_subtitle(_("Unknown"))
+        self._power_mode_row.set_tooltip_text(
+            METRIC_TOOLTIPS.get("power_profile", METRIC_TOOLTIPS["p_state"])
+        )
         self._power_mode_row.update_property(
             [Gtk.AccessibleProperty.LABEL],
             [_("Current power profile")],
@@ -197,6 +201,7 @@ class PowerPage(Adw.PreferencesPage):
 
         self._power_state_row = Adw.ActionRow(title=_("GPU Power State"))
         self._power_state_row.set_subtitle(_("Unavailable"))
+        self._power_state_row.set_tooltip_text(METRIC_TOOLTIPS["p_state"])
         self._power_state_row.update_property(
             [Gtk.AccessibleProperty.LABEL],
             [_("GPU power state")],
@@ -205,6 +210,7 @@ class PowerPage(Adw.PreferencesPage):
 
         self._power_draw_row = Adw.ActionRow(title=_("Power Draw"))
         self._power_draw_row.set_subtitle(_("Unavailable"))
+        self._power_draw_row.set_tooltip_text(METRIC_TOOLTIPS["power_draw"])
         self._power_draw_row.update_property(
             [Gtk.AccessibleProperty.LABEL],
             [_("GPU power draw")],

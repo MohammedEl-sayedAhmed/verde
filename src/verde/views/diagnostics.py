@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from verde.help_content import METRIC_TOOLTIPS
+
 if TYPE_CHECKING:
     from verde.dbus_client import VerdeDBusClient
     from verde.gpu_state import GPUState
@@ -57,9 +59,11 @@ def _has_resource(path: str) -> bool:
         return False
 
 
-def _make_row(title: str, subtitle: str) -> Adw.ActionRow:
+def _make_row(title: str, subtitle: str, tooltip: str | None = None) -> Adw.ActionRow:
     row = Adw.ActionRow(title=title, subtitle=subtitle)
     row.set_subtitle_selectable(True)
+    if tooltip:
+        row.set_tooltip_text(tooltip)
     return row
 
 
@@ -663,15 +667,19 @@ class DiagnosticsPage(Adw.PreferencesPage):
         device_count = data.get("device_count", 0)
 
         if name:
-            self._gpu_group.add(_make_row(_("GPU"), str(name)))
+            self._gpu_group.add(_make_row(_("GPU"), str(name), METRIC_TOOLTIPS["gpu_model"]))
         else:
             self._gpu_group.add(_make_row(_("GPU"), _("Not detected (NVML unavailable)")))
 
         if pci_bus:
-            self._gpu_group.add(_make_row(_("PCI Bus"), str(pci_bus)))
+            self._gpu_group.add(
+                _make_row(_("PCI Bus"), str(pci_bus), METRIC_TOOLTIPS["pcie_info"])
+            )
 
         if device_count:
-            self._gpu_group.add(_make_row(_("Device Count"), str(device_count)))
+            self._gpu_group.add(
+                _make_row(_("Device Count"), str(device_count), METRIC_TOOLTIPS["multi_gpu"])
+            )
 
         nvml_status = _("Available") if available else _("Unavailable")
         reason = data.get("reason", "")
@@ -699,7 +707,9 @@ class DiagnosticsPage(Adw.PreferencesPage):
         variant = data.get("variant", "")
 
         if version:
-            self._driver_group.add(_make_row(_("Driver Version"), str(version)))
+            self._driver_group.add(
+                _make_row(_("Driver Version"), str(version), METRIC_TOOLTIPS["driver_version"])
+            )
         else:
             self._driver_group.add(_make_row(_("Driver"), _("Not installed")))
             return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
@@ -716,7 +726,9 @@ class DiagnosticsPage(Adw.PreferencesPage):
         )
 
         if driver_type and driver_type != "none":
-            self._driver_group.add(_make_row(_("Driver Type"), str(driver_type)))
+            self._driver_group.add(
+                _make_row(_("Driver Type"), str(driver_type), METRIC_TOOLTIPS["driver_type"])
+            )
 
         if module_type:
             self._driver_group.add(_make_row(_("Module Type"), str(module_type)))

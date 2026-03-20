@@ -135,7 +135,9 @@ class TestDashboardBinding:
 
     def test_temperature_subtitle_format(self, dashboard, gpu_state):
         gpu_state.set_property("temperature", 67)
-        assert dashboard._temp_row.get_subtitle() == "67°C"
+        subtitle = dashboard._temp_row.get_subtitle()
+        assert "67" in subtitle
+        assert "normal" in subtitle.lower()
 
     def test_utilization_subtitle_format(self, dashboard, gpu_state):
         gpu_state.set_property("utilization", 45)
@@ -324,7 +326,7 @@ class TestUnavailableDisplay:
         # Simulate recovery: new data arrives
         gpu_state.set_property("gpu-available", True)
         gpu_state.set_property("temperature", 55)
-        assert dashboard._temp_row.get_subtitle() == "55°C"
+        assert "55" in dashboard._temp_row.get_subtitle()
 
 
 # ===================================================================

@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
+from verde.help_content import METRIC_TOOLTIPS, STATUS_TOOLTIPS
+from verde.humanized_status import humanize_temperature
 from verde.widgets.status_indicator import StatusIndicator
 
 # gettext stub
@@ -226,9 +228,11 @@ else:
             self._monitoring_groups.append(self._gpu_group)
 
             self._gpu_name_row = Adw.ActionRow(title="GPU")
+            self._gpu_name_row.set_tooltip_text(METRIC_TOOLTIPS["gpu_model"])
             self._gpu_group.add(self._gpu_name_row)
 
             self._driver_row = Adw.ActionRow(title="Driver")
+            self._driver_row.set_tooltip_text(METRIC_TOOLTIPS["driver_version"])
             self._gpu_group.add(self._driver_row)
 
             # ── System Health group ──
@@ -239,6 +243,7 @@ else:
             self._health_indicator = StatusIndicator()
             self._health_icon = Gtk.Image.new_from_icon_name("emblem-ok-symbolic")
             self._health_row = Adw.ActionRow(title="Overall Status")
+            self._health_row.set_tooltip_text(STATUS_TOOLTIPS["healthy"])
             self._health_row.add_prefix(self._health_icon)
             self._health_row.add_suffix(self._health_indicator)
             self._health_group.add(self._health_row)
@@ -251,24 +256,28 @@ else:
             # Temperature
             self._temp_indicator = StatusIndicator()
             self._temp_row = Adw.ActionRow(title="Temperature")
+            self._temp_row.set_tooltip_text(METRIC_TOOLTIPS["temperature"])
             self._temp_row.add_suffix(self._temp_indicator)
             self._stats_group.add(self._temp_row)
 
             # GPU Utilization
             self._util_indicator = StatusIndicator()
             self._util_row = Adw.ActionRow(title="GPU Utilization")
+            self._util_row.set_tooltip_text(METRIC_TOOLTIPS["utilization"])
             self._util_row.add_suffix(self._util_indicator)
             self._stats_group.add(self._util_row)
 
             # VRAM Usage
             self._vram_indicator = StatusIndicator()
             self._vram_row = Adw.ActionRow(title="VRAM Usage")
+            self._vram_row.set_tooltip_text(METRIC_TOOLTIPS["vram_usage"])
             self._vram_row.add_suffix(self._vram_indicator)
             self._stats_group.add(self._vram_row)
 
             # Power Draw
             self._power_indicator = StatusIndicator()
             self._power_row = Adw.ActionRow(title="Power Draw")
+            self._power_row.set_tooltip_text(METRIC_TOOLTIPS["power_draw"])
             self._power_row.add_suffix(self._power_indicator)
             self._stats_group.add(self._power_row)
 
@@ -291,42 +300,51 @@ else:
 
             # CUDA cores
             self._cores_row = Adw.ActionRow(title="CUDA Cores")
+            self._cores_row.set_tooltip_text(METRIC_TOOLTIPS["cuda_cores"])
             self._advanced_expander.add_row(self._cores_row)
 
             # Compute capability
             self._compute_cap_row = Adw.ActionRow(title="Compute Capability")
+            self._compute_cap_row.set_tooltip_text(METRIC_TOOLTIPS["compute_capability"])
             self._advanced_expander.add_row(self._compute_cap_row)
 
             # PCIe Bus ID
             self._pcie_bus_id_row = Adw.ActionRow(title="PCIe Bus ID")
+            self._pcie_bus_id_row.set_tooltip_text(METRIC_TOOLTIPS["pcie_info"])
             self._advanced_expander.add_row(self._pcie_bus_id_row)
 
             # Power limit
             self._power_limit_row = Adw.ActionRow(title="Power Limit")
+            self._power_limit_row.set_tooltip_text(METRIC_TOOLTIPS["power_limit"])
             self._advanced_expander.add_row(self._power_limit_row)
 
             # Driver CUDA version
             self._cuda_driver_row = Adw.ActionRow(title="Driver CUDA Version")
+            self._cuda_driver_row.set_tooltip_text(METRIC_TOOLTIPS["cuda_version"])
             self._cuda_driver_row.set_subtitle("Maximum CUDA version supported by driver")
             self._advanced_expander.add_row(self._cuda_driver_row)
 
             # CUDA toolkit version
             self._cuda_toolkit_row = Adw.ActionRow(title="CUDA Toolkit Version")
+            self._cuda_toolkit_row.set_tooltip_text(METRIC_TOOLTIPS["cuda_toolkit_version"])
             self._cuda_toolkit_row.set_subtitle("Installed toolkit version")
             self._advanced_expander.add_row(self._cuda_toolkit_row)
 
             # GPU mode (Optimus) — hidden by default, shown only when available
             self._gpu_mode_row = Adw.ActionRow(title="GPU Mode")
+            self._gpu_mode_row.set_tooltip_text(METRIC_TOOLTIPS["gpu_mode"])
             self._gpu_mode_row.set_visible(False)
             self._advanced_expander.add_row(self._gpu_mode_row)
 
             # ECC row — hidden by default, shown only on ECC-capable GPUs
             self._ecc_row = Adw.ActionRow(title="ECC Memory")
+            self._ecc_row.set_tooltip_text(METRIC_TOOLTIPS["ecc_memory"])
             self._ecc_row.set_visible(False)
             self._advanced_expander.add_row(self._ecc_row)
 
             # Throttle reasons — hidden when no throttling
             self._throttle_row = Adw.ActionRow(title="Throttle Reasons")
+            self._throttle_row.set_tooltip_text(METRIC_TOOLTIPS["throttle_reason"])
             self._throttle_row.set_visible(False)
             self._advanced_expander.add_row(self._throttle_row)
 
@@ -334,6 +352,7 @@ else:
             self._multi_gpu_row = Adw.ActionRow(
                 title="Additional GPUs Detected",
             )
+            self._multi_gpu_row.set_tooltip_text(METRIC_TOOLTIPS["multi_gpu"])
             self._multi_gpu_row.set_visible(False)
             self._advanced_expander.add_row(self._multi_gpu_row)
 
@@ -391,7 +410,7 @@ else:
 
         def _on_temperature_changed(self) -> None:
             temp = self._gpu_state.get_property("temperature")
-            self._temp_row.set_subtitle(f"{temp}°C")
+            self._temp_row.set_subtitle(humanize_temperature(temp, TEMP_WARN, TEMP_CRIT))
             self._temp_indicator.set_status_from_thresholds(temp, TEMP_WARN, TEMP_CRIT)
             self._temp_row.update_property(
                 [Gtk.AccessibleProperty.DESCRIPTION],
@@ -462,6 +481,9 @@ else:
             }
             self._health_indicator.set_status(labels[health], health)
             self._health_icon.set_from_icon_name(icons[health])
+            # Update tooltip to match current health level
+            tooltip_key = {"good": "healthy", "warn": "warning", "crit": "critical"}
+            self._health_row.set_tooltip_text(STATUS_TOOLTIPS[tooltip_key[health]])
             self._health_row.update_property(
                 [Gtk.AccessibleProperty.DESCRIPTION],
                 [f"System Health: {labels[health]}"],
