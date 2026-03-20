@@ -30,6 +30,13 @@
       <arg name="format" type="s" direction="in"/>
       <arg name="report" type="s" direction="out"/>
     </method>
+    <method name="GetAuditLog">
+      <arg name="filter_type" type="s" direction="in"/>
+      <arg name="date_from" type="s" direction="in"/>
+      <arg name="date_to" type="s" direction="in"/>
+      <arg name="result" type="s" direction="in"/>
+      <arg name="entries" type="aa{sv}" direction="out"/>
+    </method>
     <method name="GetPreflightCheck">
       <arg name="operation" type="s" direction="in"/>
       <arg name="result" type="a{sv}" direction="out"/>
@@ -89,6 +96,10 @@
     <signal name="RebootRequired">
       <arg name="required" type="b"/>
       <arg name="reason" type="s"/>
+    </signal>
+    <signal name="ExternalChangesDetected">
+      <arg name="changes" type="aa{sv}"/>
+      <arg name="integrity_issues" type="aa{sv}"/>
     </signal>
   </interface>
 </node>

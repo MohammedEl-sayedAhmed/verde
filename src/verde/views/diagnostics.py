@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import platform
 from datetime import datetime
+from datetime import timedelta as _timedelta
 from typing import TYPE_CHECKING
 
 from gi.repository import Adw, Gio, GLib, Gtk
@@ -202,6 +203,100 @@ class DiagnosticsPage(Adw.PreferencesPage):
         self._report_text: str = ""
         self._generating: bool = False
 
+        # ── Activity Log group (Story 5.3) ──
+        self._audit_group = Adw.PreferencesGroup(title=_("Activity Log"))
+        self.add(self._audit_group)
+
+        # Filter bar
+        filter_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        filter_box.set_margin_start(12)
+        filter_box.set_margin_end(12)
+        filter_box.set_margin_top(6)
+        filter_box.set_margin_bottom(6)
+
+        # Operation type filter
+        self._type_filter = Gtk.DropDown.new_from_strings(
+            [
+                _("All Types"),
+                "INSTALL_DRIVER",
+                "ROLLBACK_DRIVER",
+                "FIX_SUSPEND",
+                "FIX_HIBERNATE",
+                "AUTH_DENIED",
+                "GENERATE_DIAGNOSTIC",
+            ]
+        )
+        self._type_filter.set_enable_search(False)
+        self._type_filter.set_selected(0)
+        self._type_filter.connect("notify::selected", self._on_filter_changed)
+        self._type_filter.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Filter by operation type")],
+        )
+        filter_box.append(self._type_filter)
+
+        # Result filter
+        self._result_filter = Gtk.DropDown.new_from_strings(
+            [_("All Results"), "success", "failed", "denied"]
+        )
+        self._result_filter.set_enable_search(False)
+        self._result_filter.set_selected(0)
+        self._result_filter.connect("notify::selected", self._on_filter_changed)
+        self._result_filter.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Filter by result")],
+        )
+        filter_box.append(self._result_filter)
+
+        # Date range filter
+        self._date_filter = Gtk.DropDown.new_from_strings(
+            [_("All Time"), _("Today"), _("Last 7 Days"), _("Last 30 Days")]
+        )
+        self._date_filter.set_enable_search(False)
+        self._date_filter.set_selected(0)
+        self._date_filter.connect("notify::selected", self._on_filter_changed)
+        self._date_filter.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Filter by date range")],
+        )
+        filter_box.append(self._date_filter)
+
+        self._audit_group.add(filter_box)
+
+        # Entry count label
+        self._entry_count_label = Gtk.Label(label=_("No entries"))
+        self._entry_count_label.set_xalign(0.0)
+        self._entry_count_label.set_margin_start(12)
+        self._entry_count_label.add_css_class("dim-label")
+        self._audit_group.add(self._entry_count_label)
+
+        # Export button
+        self._export_btn = Gtk.Button(label=_("Export"))
+        self._export_btn.set_halign(Gtk.Align.END)
+        self._export_btn.set_margin_end(12)
+        self._export_btn.set_margin_bottom(6)
+        self._export_btn.set_sensitive(False)
+        self._export_btn.connect("clicked", self._on_export_clicked)
+        self._export_btn.update_property(
+            [Gtk.AccessibleProperty.LABEL],
+            [_("Export audit log to clipboard")],
+        )
+        self._audit_group.add(self._export_btn)
+
+        # Empty state
+        self._audit_empty = Adw.StatusPage()
+        self._audit_empty.set_icon_name("document-open-symbolic")
+        self._audit_empty.set_title(_("No operations recorded yet"))
+        self._audit_empty.set_description(
+            _("Audit entries will appear here after Verde performs system changes.")
+        )
+        self._audit_empty.set_visible(False)
+        self._audit_group.add(self._audit_empty)
+
+        # Tracked entry rows for cleanup
+        self._audit_entry_rows: list[Adw.ExpanderRow] = []
+        self._audit_entries_raw: list[dict] = []
+
     # ── State binding ─────────────────────────────────────────────────
 
     def bind_state(self, gpu_state: GPUState, dbus_client: VerdeDBusClient) -> None:
@@ -357,6 +452,168 @@ class DiagnosticsPage(Adw.PreferencesPage):
             toast.set_timeout(3)
             window.toast_overlay.add_toast(toast)
 
+    # ── Audit log ──────────────────────────────────────────────────────
+
+    def _load_audit_log(self) -> None:
+        """Fetch audit log entries via D-Bus with current filters."""
+        if self._dbus_client is None:
+            return
+
+        filter_type = self._get_type_filter_value()
+        result_filter = self._get_result_filter_value()
+        date_from, date_to = self._get_date_filter_values()
+
+        self._dbus_client.call_method_async(
+            "GetAuditLog",
+            GLib.Variant("(ssss)", (filter_type, date_from, date_to, result_filter)),
+            self._on_audit_log_reply,
+        )
+
+    def _on_audit_log_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
+        """Handle GetAuditLog D-Bus reply."""
+        try:
+            reply = proxy.call_finish(result)
+            entries = reply.unpack()[0]
+            self._populate_audit_entries(entries)
+        except GLib.Error as exc:
+            log.warning("GetAuditLog failed: %s", exc.message)
+            self._populate_audit_entries([])
+
+    def _populate_audit_entries(self, entries: list[dict]) -> None:
+        """Populate audit log rows from entry dicts."""
+        # Clear old rows
+        for row in self._audit_entry_rows:
+            self._audit_group.remove(row)
+        self._audit_entry_rows.clear()
+        self._audit_entries_raw = list(entries)
+
+        if not entries:
+            self._audit_empty.set_visible(True)
+            self._entry_count_label.set_label(_("No entries"))
+            self._export_btn.set_sensitive(False)
+            return
+
+        self._audit_empty.set_visible(False)
+        self._entry_count_label.set_label(_("Showing {count} entries").format(count=len(entries)))
+        self._export_btn.set_sensitive(True)
+
+        for entry in entries:
+            op = entry.get("operation", _("Unknown"))
+            result_val = entry.get("result", "")
+            ts = entry.get("timestamp", "")
+            flagged = entry.get("flagged", False)
+            flag_reason = entry.get("flag_reason", "")
+            params = entry.get("params", "")
+            caller = entry.get("caller", "")
+            message = entry.get("message", "")
+
+            # Format timestamp for display
+            ts_display = ts[:16].replace("T", " ") if ts else _("Unknown time")
+
+            # Title: operation + badge
+            badge = "  \u2713" if result_val == "success" else "  \u2717"
+            title = f"{op}{badge}"
+
+            row = Adw.ExpanderRow(title=title, subtitle=ts_display)
+            row.set_show_enable_switch(False)
+            row.set_expanded(False)
+
+            if flagged:
+                icon = Gtk.Image(icon_name="dialog-warning-symbolic")
+                icon.add_css_class("warning")
+                icon.set_tooltip_text(flag_reason)
+                row.add_suffix(icon)
+
+            # Detail rows
+            if params and params not in ("{}", ""):
+                detail_params = Adw.ActionRow(title=_("Parameters"), subtitle=str(params))
+                detail_params.set_subtitle_selectable(True)
+                row.add_row(detail_params)
+            if caller:
+                detail_caller = Adw.ActionRow(title=_("Caller"), subtitle=str(caller))
+                row.add_row(detail_caller)
+            if message:
+                detail_msg = Adw.ActionRow(title=_("Message"), subtitle=str(message))
+                detail_msg.set_subtitle_selectable(True)
+                row.add_row(detail_msg)
+            if flag_reason:
+                detail_flag = Adw.ActionRow(title=_("Security Flag"), subtitle=flag_reason)
+                detail_flag.add_css_class("warning")
+                row.add_row(detail_flag)
+
+            self._audit_group.add(row)
+            self._audit_entry_rows.append(row)
+
+    def _on_filter_changed(self, _dropdown: Gtk.DropDown, _pspec) -> None:
+        """Reload audit log when any filter changes."""
+        self._load_audit_log()
+
+    def _get_type_filter_value(self) -> str:
+        """Get selected operation type filter value."""
+        idx = self._type_filter.get_selected()
+        if idx == 0:
+            return ""
+        model = self._type_filter.get_model()
+        return model.get_string(idx) or ""
+
+    def _get_result_filter_value(self) -> str:
+        """Get selected result filter value."""
+        idx = self._result_filter.get_selected()
+        if idx == 0:
+            return ""
+        model = self._result_filter.get_model()
+        return model.get_string(idx) or ""
+
+    def _get_date_filter_values(self) -> tuple[str, str]:
+        """Get date range filter as (date_from, date_to) UTC-aware ISO strings."""
+        from datetime import UTC
+
+        idx = self._date_filter.get_selected()
+        if idx == 0:  # All Time
+            return "", ""
+        now = datetime.now(tz=UTC)
+        if idx == 1:  # Today
+            date_from = now.strftime("%Y-%m-%dT00:00:00+00:00")
+        elif idx == 2:  # Last 7 Days
+            date_from = (now - _timedelta(days=7)).strftime("%Y-%m-%dT00:00:00+00:00")
+        elif idx == 3:  # Last 30 Days
+            date_from = (now - _timedelta(days=30)).strftime("%Y-%m-%dT00:00:00+00:00")
+        else:
+            return "", ""
+        return date_from, ""
+
+    def _on_export_clicked(self, _btn: Gtk.Button) -> None:
+        """Export filtered audit entries as JSONL to clipboard."""
+        if not self._audit_entries_raw:
+            return
+
+        import json as _json
+
+        lines = []
+        for entry in self._audit_entries_raw:
+            # Strip internal viewer fields from export
+            clean = {k: v for k, v in entry.items() if k not in ("flagged", "flag_reason")}
+            lines.append(_json.dumps(clean, separators=(",", ":")))
+        export_text = "\n".join(lines)
+
+        display = self.get_display()
+        if display is None:
+            return
+        clipboard = display.get_clipboard()
+        clipboard.set(export_text)
+
+        window = self.get_root()
+        if (
+            isinstance(window, Adw.ApplicationWindow)
+            and getattr(window, "toast_overlay", None) is not None
+        ):
+            count = len(self._audit_entries_raw)
+            toast = Adw.Toast(
+                title=_("Audit log copied to clipboard ({count} entries)").format(count=count),
+            )
+            toast.set_timeout(3)
+            window.toast_overlay.add_toast(toast)
+
     # ── Data loading ──────────────────────────────────────────────────
 
     def _load_diagnostics(self) -> None:
@@ -365,6 +622,7 @@ class DiagnosticsPage(Adw.PreferencesPage):
         self._dbus_client.call_method_async("GetGPUInfo", None, self._on_gpu_info_reply)
         self._dbus_client.call_method_async("GetCurrentDriver", None, self._on_driver_reply)
         self._dbus_client.call_method_async("GetDegradedState", None, self._on_state_reply)
+        self._load_audit_log()
 
     def _on_gpu_info_reply(self, proxy: Gio.DBusProxy, result: Gio.AsyncResult) -> None:
         try:

@@ -30,6 +30,7 @@ from verde_daemon.audit import (
     OP_INSTALL_DRIVER,
     OP_ROLLBACK_DRIVER,
     AuditLogger,
+    detect_suspicious_patterns,
 )
 from verde_daemon.degraded_states import (
     DegradedState,
@@ -524,6 +525,11 @@ class VerdeService:
         # Diagnostic report generation (Story 5.1)
         if method_name == "GenerateDiagnosticReport":
             self._dispatch_generate_diagnostic(parameters, invocation, sender)
+            return
+
+        # Audit log viewer (Story 5.3)
+        if method_name == "GetAuditLog":
+            self._dispatch_get_audit_log(parameters, invocation)
             return
 
         # Remaining methods — stubs until actual implementations
@@ -1185,6 +1191,63 @@ class VerdeService:
             invocation.return_dbus_error(
                 "com.verde.Error.InternalError",
                 "Internal error while generating diagnostic report.",
+            )
+
+    # ------------------------------------------------------------------
+    # Audit log dispatch (Story 5.3)
+    # ------------------------------------------------------------------
+
+    def _dispatch_get_audit_log(
+        self,
+        parameters: GLib.Variant,
+        invocation: Gio.DBusMethodInvocation,
+    ) -> None:
+        """Handle GetAuditLog: read, filter, and return audit entries."""
+        try:
+            filter_type = parameters.get_child_value(0).get_string() if parameters else ""
+            date_from = parameters.get_child_value(1).get_string() if parameters else ""
+            date_to = parameters.get_child_value(2).get_string() if parameters else ""
+            result_filter = parameters.get_child_value(3).get_string() if parameters else ""
+
+            if self._audit is None:
+                invocation.return_value(
+                    GLib.Variant.new_tuple(GLib.Variant("aa{sv}", [])),
+                )
+                return
+
+            entries = self._audit.read_entries(
+                filter_type=filter_type,
+                date_from=date_from,
+                date_to=date_to,
+                result=result_filter,
+            )
+
+            # Detect suspicious patterns
+            entries = detect_suspicious_patterns(entries)
+
+            # Convert to aa{sv}
+            gv_entries = []
+            for entry in entries:
+                gv_entry: dict[str, GLib.Variant] = {
+                    "operation": GLib.Variant("s", entry.get("operation", "")),
+                    "timestamp": GLib.Variant("s", entry.get("timestamp", "")),
+                    "params": GLib.Variant("s", json.dumps(entry.get("params", {}))),
+                    "caller": GLib.Variant("s", entry.get("caller", "")),
+                    "result": GLib.Variant("s", entry.get("result", "")),
+                    "message": GLib.Variant("s", entry.get("error", "")),
+                    "flagged": GLib.Variant("b", entry.get("flagged", False)),
+                    "flag_reason": GLib.Variant("s", entry.get("flag_reason", "")),
+                }
+                gv_entries.append(GLib.Variant("a{sv}", gv_entry))
+
+            invocation.return_value(
+                GLib.Variant.new_tuple(GLib.Variant("aa{sv}", gv_entries)),
+            )
+        except Exception:
+            log.exception("GetAuditLog dispatch failed")
+            invocation.return_dbus_error(
+                "com.verde.Error.InternalError",
+                "Internal error while reading audit log.",
             )
 
     # ------------------------------------------------------------------

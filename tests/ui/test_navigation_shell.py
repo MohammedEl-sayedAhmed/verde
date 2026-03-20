@@ -138,6 +138,16 @@ def _find_widgets_of_type(widget, widget_type):
     return found
 
 
+def _is_descendant_of(widget, ancestor_type):
+    """Check if a widget is a descendant of a widget of the given type."""
+    parent = widget.get_parent()
+    while parent is not None:
+        if isinstance(parent, ancestor_type):
+            return True
+        parent = parent.get_parent()
+    return False
+
+
 class TestNoTextInput:
     def test_no_gtk_entry(self, window):
         entries = _find_widgets_of_type(window, Gtk.Entry)
@@ -145,4 +155,7 @@ class TestNoTextInput:
 
     def test_no_gtk_search_entry(self, window):
         entries = _find_widgets_of_type(window, Gtk.SearchEntry)
-        assert entries == [], f"Found Gtk.SearchEntry widgets: {entries}"
+        # Exclude SearchEntry widgets that are internal children of Gtk.DropDown
+        # (GTK4 DropDown always creates an internal SearchEntry even with search disabled)
+        non_dropdown = [e for e in entries if not _is_descendant_of(e, Gtk.DropDown)]
+        assert non_dropdown == [], f"Found Gtk.SearchEntry widgets: {non_dropdown}"

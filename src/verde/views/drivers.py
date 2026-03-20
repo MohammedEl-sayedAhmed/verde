@@ -990,7 +990,7 @@ class DriversPage(Adw.PreferencesPage):
 def _sanitize_dbus_error(error_text: str) -> str:
     """Convert raw D-Bus/GLib error strings into user-friendly messages."""
     if not error_text:
-        return _("An unexpected error occurred")
+        return _("An unexpected error occurred")  # type: ignore[used-before-def]
 
     # Strip GLib error domain prefixes (e.g., "g-dbus-error-quark: ")
     if ": " in error_text and error_text.startswith("g-"):
