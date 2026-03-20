@@ -28,7 +28,7 @@ UBUNTU_DRIVERS_LINE = re.compile(
 
 # dpkg-query output: tab-separated
 # Package\tVersion\tStatus-Abbrev
-DPKG_LINE = re.compile(r"^([\w\-]+)\t([\d.\-]+\w*)\t(\w+)")
+DPKG_LINE = re.compile(r"^([\w\-]+)\t([^\t]*)\t(\w+)")
 
 # /proc/driver/nvidia/version first line
 PROC_NVIDIA_VERSION = re.compile(r"Kernel Module\s+(\d{3,4}\.\d+)")
@@ -82,15 +82,21 @@ class DriverManager:
     # -- subprocess helper --------------------------------------------------
 
     @staticmethod
-    def _run_cmd(cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess | None:
+    def _run_cmd(
+        cmd: list[str], timeout: int = 30, *, quiet: bool = False,
+    ) -> subprocess.CompletedProcess | None:
         """Run a subprocess command with error handling.
 
-        Returns None on failure.
+        Returns None on failure.  When *quiet* is ``True``, non-zero exit
+        codes are logged at DEBUG instead of WARNING (useful for commands
+        where failure is expected, like dpkg-query with no matching packages).
         """
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
             if result.returncode != 0:
-                log.warning(
+                level = logging.DEBUG if quiet else logging.WARNING
+                log.log(
+                    level,
                     "Command %s failed (rc=%d): %s",
                     cmd[0],
                     result.returncode,
@@ -251,36 +257,41 @@ class DriverManager:
     # -- Task 3: driver package enumeration --------------------------------
 
     def _enumerate_nvidia_packages(self) -> list[dict]:
-        """Query dpkg for installed NVIDIA driver/DKMS/prebuilt packages."""
-        result = self._run_cmd(
-            [
-                "dpkg-query",
-                "-W",
-                "-f",
-                "${Package}\t${Version}\t${db:Status-Abbrev}\n",
-                "nvidia-driver-*",
-                "nvidia-dkms-*",
-                "linux-modules-nvidia-*",
-            ],
-            timeout=10,
-        )
-        if result is None:
-            return []
+        """Query dpkg for installed NVIDIA driver/DKMS/prebuilt packages.
 
+        Queries each pattern separately because ``dpkg-query`` exits with
+        code 1 when *any* pattern has zero matches, which would discard
+        valid results from the other patterns.
+        """
+        patterns = ["nvidia-driver-*", "nvidia-dkms-*", "linux-modules-nvidia-*"]
         packages: list[dict] = []
-        for line in result.stdout.splitlines():
-            line = line.strip()
-            if not line:
+        for pattern in patterns:
+            result = self._run_cmd(
+                [
+                    "dpkg-query",
+                    "-W",
+                    "-f",
+                    "${Package}\t${Version}\t${db:Status-Abbrev}\n",
+                    pattern,
+                ],
+                timeout=10,
+                quiet=True,
+            )
+            if result is None:
                 continue
-            m = DPKG_LINE.match(line)
-            if m:
-                packages.append(
-                    {
-                        "package_name": m.group(1),
-                        "version": m.group(2),
-                        "status": m.group(3),
-                    }
-                )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                m = DPKG_LINE.match(line)
+                if m:
+                    packages.append(
+                        {
+                            "package_name": m.group(1),
+                            "version": m.group(2),
+                            "status": m.group(3),
+                        }
+                    )
         return packages
 
     def _get_available_packages(self) -> list[dict]:
@@ -507,7 +518,9 @@ class DriverManager:
                     result["driver_type"] = "nouveau"
                     result["loaded"] = True
 
-        # Find matching dpkg package and determine module type
+        # Find matching dpkg package and determine module type.
+        # When the module is loaded we already have a version from /proc;
+        # when it is NOT loaded we fall back to _enumerate_nvidia_packages.
         if result["version"]:
             major = result["version"].split(".")[0]
             dpkg = self._run_cmd(
@@ -538,6 +551,34 @@ class DriverManager:
                     if mt != "unknown":
                         module_type = mt
                 result["module_type"] = module_type
+        else:
+            # Fallback: driver package installed but kernel module not loaded.
+            # Enumerate dpkg packages to find an installed nvidia-driver-*.
+            pkgs = self._enumerate_nvidia_packages()
+            for pkg in pkgs:
+                if (
+                    pkg["status"].startswith("ii")
+                    and pkg["package_name"].startswith("nvidia-driver-")
+                ):
+                    ver_match = re.search(
+                        r"nvidia-driver-(\d+)", pkg["package_name"]
+                    )
+                    if ver_match:
+                        result["version"] = ver_match.group(1)
+                        result["package_name"] = pkg["package_name"]
+                        result["variant"] = self._detect_driver_variant(
+                            pkg["package_name"]
+                        )
+                        result["driver_type"] = "package"
+                        result["loaded"] = False
+                        # Determine module_type from associated packages
+                        for p in pkgs:
+                            if p["status"].startswith("ii"):
+                                mt = self._classify_module_type(p["package_name"])
+                                if mt != "unknown":
+                                    result["module_type"] = mt
+                                    break
+                        break
 
         return result
 
@@ -630,6 +671,33 @@ class DriverManager:
                         "repository": "ubuntu",
                     }
                 )
+
+        # Ensure the currently installed driver always appears in the list,
+        # even when ubuntu-drivers and apt-cache don't list it (legacy GPU).
+        known_pkgs = {d["package_name"] for d in drivers}
+        if not any(d.get("installed") for d in drivers):
+            for pkg in installed_pkgs:
+                if (
+                    pkg["status"].startswith("ii")
+                    and pkg["package_name"].startswith("nvidia-driver-")
+                    and pkg["package_name"] not in known_pkgs
+                ):
+                    pkg_name = pkg["package_name"]
+                    ver_match = re.search(r"(\d{3,4})", pkg_name)
+                    version = ver_match.group(1) if ver_match else ""
+                    drivers.append(
+                        {
+                            "version": version,
+                            "variant": self._detect_driver_variant(pkg_name),
+                            "package_name": pkg_name,
+                            "installed": True,
+                            "recommended": False,
+                            "held": pkg_name in holds,
+                            "module_type": self._classify_module_type(pkg_name),
+                            "module_status": "not_loaded",
+                            "repository": "ubuntu",
+                        }
+                    )
 
         # Repository check
         missing_repos = self._check_apt_repositories()

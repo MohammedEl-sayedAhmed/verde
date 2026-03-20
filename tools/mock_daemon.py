@@ -4,9 +4,16 @@
 Runs on the SESSION bus (not system bus) so no root is needed.
 Provides fake GPU data so all GUI views render with realistic content.
 
+Profiles:
+    (default)   — fully working GPU with live stats
+    --degraded  — driver installed but kernel module not loaded (no NVML)
+    --no-driver — no driver installed at all
+
 Usage (from project root):
     # Terminal 1 - start mock daemon
     PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py
+    PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --degraded
+    PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --no-driver
 
     # Terminal 2 - start GUI against session bus
     VERDE_USE_SESSION_BUS=1 PYTHONPATH=src:src/verde-daemon python3 tools/run_gui.py
@@ -14,6 +21,7 @@ Usage (from project root):
 
 from __future__ import annotations
 
+import argparse
 import json
 import random
 import sys
@@ -211,12 +219,170 @@ def _build_gpu_stats() -> dict:
     }
 
 
+# ── Degraded-mode builders (driver installed, module not loaded) ──────
+
+
+def _build_gpu_info_degraded() -> dict:
+    return {
+        "available": _v("b", False),
+        "reason": _v("s", "Driver installed but kernel module not loaded"),
+        "name": _v("s", "GM108M [GeForce 840M]"),
+        "device_count": _v("i", 1),
+        "driver_version": _v("s", "535"),
+        "driver_type": _v("s", "package"),
+        "loaded": _v("b", False),
+        "pci_bus_id": _v("s", "0000:03:00.0"),
+    }
+
+
+def _build_current_driver_degraded() -> dict:
+    return {
+        "available": _v("b", False),
+        "driver_type": _v("s", "package"),
+        "version": _v("s", "535"),
+        "package_name": _v("s", "nvidia-driver-535"),
+        "variant": _v("s", "desktop"),
+        "module_type": _v("s", "dkms"),
+        "loaded": _v("b", False),
+        "reboot_required": _v("b", False),
+        "reboot_reason": _v("s", ""),
+    }
+
+
+def _build_available_drivers_degraded() -> list[dict]:
+    return [
+        {
+            "version": _v("s", "535"),
+            "variant": _v("s", ""),
+            "package_name": _v("s", "nvidia-driver-535"),
+            "installed": _v("b", True),
+            "recommended": _v("b", False),
+            "held": _v("b", False),
+            "module_type": _v("s", "dkms"),
+            "module_status": _v("s", "not_loaded"),
+            "repository": _v("s", "ubuntu"),
+            "hold_message": _v("s", ""),
+            "recommendation_reason": _v("s", ""),
+            "cuda_compatibility": _v("s", "CUDA 12.2"),
+            "known_issues": _v("s", "Legacy GPU — limited feature support"),
+        },
+    ]
+
+
+def _build_degraded_state_degraded() -> dict:
+    return {
+        "state": _v("s", "driver_not_loaded"),
+        "driver_type": _v("s", "none"),
+        "device_count": _v("i", 0),
+        "message": _v(
+            "s",
+            "NVIDIA driver package is installed but the kernel module is not loaded",
+        ),
+        "driver_version": _v("s", "535"),
+        "package_name": _v("s", "nvidia-driver-535"),
+    }
+
+
+def _build_gpu_stats_degraded() -> dict:
+    return {
+        "available": _v("b", False),
+        "reason": _v("s", "Kernel module not loaded"),
+    }
+
+
+def _build_power_status_degraded() -> dict:
+    return {
+        "overall_status": _v("s", "issues_found"),
+        "suspend_service_active": _v("b", False),
+        "hibernate_service_active": _v("b", False),
+        "secure_boot_enabled": _v("b", True),
+        "mok_enrolled": _v("b", True),
+        "wayland_session": _v("b", True),
+        "issues": _v(
+            "aa{sv}",
+            [
+                {
+                    "type": _v("s", "suspend"),
+                    "severity": _v("s", "critical"),
+                    "summary": _v("s", "Suspend services not enabled"),
+                    "detail": _v(
+                        "s",
+                        "nvidia-suspend.service and nvidia-resume.service "
+                        "are not enabled. GPU VRAM may be lost on suspend.",
+                    ),
+                    "fixable": _v("b", True),
+                    "already_fixed": _v("b", False),
+                },
+                {
+                    "type": _v("s", "hibernate"),
+                    "severity": _v("s", "warning"),
+                    "summary": _v("s", "Hibernate not configured"),
+                    "detail": _v(
+                        "s",
+                        "nvidia-hibernate.service is disabled and "
+                        "power management conf is missing.",
+                    ),
+                    "fixable": _v("b", True),
+                    "already_fixed": _v("b", False),
+                },
+                {
+                    "type": _v("s", "wayland"),
+                    "severity": _v("s", "warning"),
+                    "summary": _v("s", "nvidia-drm.modeset not set"),
+                    "detail": _v(
+                        "s",
+                        "Kernel parameter nvidia-drm.modeset=1 is not set. "
+                        "Wayland sessions may not work correctly.",
+                    ),
+                    "fixable": _v("b", False),
+                    "already_fixed": _v("b", False),
+                },
+            ],
+        ),
+    }
+
+
+# ── No-driver mode builders ──────────────────────────────────────────
+
+
+def _build_gpu_info_no_driver() -> dict:
+    return {
+        "available": _v("b", False),
+        "reason": _v("s", "NVIDIA driver not loaded"),
+    }
+
+
+def _build_current_driver_no_driver() -> dict:
+    return {
+        "available": _v("b", False),
+        "driver_type": _v("s", "none"),
+        "version": _v("s", ""),
+        "loaded": _v("b", False),
+        "reboot_required": _v("b", False),
+        "reboot_reason": _v("s", ""),
+    }
+
+
+def _build_degraded_state_no_driver() -> dict:
+    return {
+        "state": _v("s", "no_driver"),
+        "driver_type": _v("s", "none"),
+        "device_count": _v("i", 0),
+        "message": _v("s", "No NVIDIA driver is installed"),
+    }
+
+
 class MockVerdeService:
     """Session-bus mock of the Verde D-Bus daemon."""
 
-    def __init__(self, connection: Gio.DBusConnection) -> None:
+    def __init__(
+        self,
+        connection: Gio.DBusConnection,
+        profile: str = "normal",
+    ) -> None:
         self._conn = connection
         self._op_in_progress = False
+        self._profile = profile
 
         xml = _INTROSPECTION_PATH.read_text(encoding="utf-8")
         node_info = Gio.DBusNodeInfo.new_for_xml(xml)
@@ -229,8 +395,9 @@ class MockVerdeService:
             None,
         )
 
-        GLib.timeout_add_seconds(2, self._emit_stats)
-        print("Mock daemon ready on session bus")
+        if profile == "normal":
+            GLib.timeout_add_seconds(2, self._emit_stats)
+        print(f"Mock daemon ready on session bus (profile: {profile})")
 
     # -- Signals --------------------------------------------------------
 
@@ -280,30 +447,61 @@ class MockVerdeService:
         invocation.return_value(None)
 
     def _handle_GetGPUInfo(self, _params, invocation):
-        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", _build_gpu_info())))
+        if self._profile == "degraded":
+            data = _build_gpu_info_degraded()
+        elif self._profile == "no_driver":
+            data = _build_gpu_info_no_driver()
+        else:
+            data = _build_gpu_info()
+        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", data)))
 
     def _handle_GetGPUStats(self, _params, invocation):
-        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", _build_gpu_stats())))
+        if self._profile in ("degraded", "no_driver"):
+            data = _build_gpu_stats_degraded()
+        else:
+            data = _build_gpu_stats()
+        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", data)))
 
     def _handle_GetCurrentDriver(self, _params, invocation):
-        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", _build_current_driver())))
+        if self._profile == "degraded":
+            data = _build_current_driver_degraded()
+        elif self._profile == "no_driver":
+            data = _build_current_driver_no_driver()
+        else:
+            data = _build_current_driver()
+        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", data)))
 
     def _handle_ListAvailableDrivers(self, _params, invocation):
-        drivers = _v("aa{sv}", _build_available_drivers())
+        if self._profile == "degraded":
+            drivers_data = _build_available_drivers_degraded()
+        elif self._profile == "no_driver":
+            drivers_data = []
+        else:
+            drivers_data = _build_available_drivers()
+        drivers = _v("aa{sv}", drivers_data)
         metadata = _v("a{sv}", _build_driver_metadata())
         invocation.return_value(GLib.Variant.new_tuple(drivers, metadata))
 
     def _handle_GetDegradedState(self, _params, invocation):
-        state = {
-            "state": _v("s", "healthy"),
-            "driver_type": _v("s", "package"),
-            "device_count": _v("i", 1),
-            "message": _v("s", ""),
-        }
+        if self._profile == "degraded":
+            state = _build_degraded_state_degraded()
+        elif self._profile == "no_driver":
+            state = _build_degraded_state_no_driver()
+        else:
+            state = {
+                "state": _v("s", "healthy"),
+                "driver_type": _v("s", "package"),
+                "device_count": _v("i", 1),
+                "message": _v("s", ""),
+            }
         invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", state)))
 
     def _handle_GetPowerStatus(self, _params, invocation):
-        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", _build_power_status())))
+        if self._profile == "degraded":
+            data = _build_power_status_degraded()
+        else:
+            data = _build_power_status()
+        invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", data)))
 
     def _handle_GetPreflightCheck(self, params, invocation):
         result = {
@@ -408,6 +606,27 @@ class MockVerdeService:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Mock Verde D-Bus daemon")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--degraded",
+        action="store_true",
+        help="Simulate driver installed but kernel module not loaded",
+    )
+    group.add_argument(
+        "--no-driver",
+        action="store_true",
+        help="Simulate no NVIDIA driver installed",
+    )
+    args = parser.parse_args()
+
+    if args.degraded:
+        profile = "degraded"
+    elif args.no_driver:
+        profile = "no_driver"
+    else:
+        profile = "normal"
+
     if not _INTROSPECTION_PATH.exists():
         print(
             f"Error: {_INTROSPECTION_PATH} not found. Run from project root.",
@@ -418,7 +637,7 @@ def main() -> None:
     loop = GLib.MainLoop()
 
     def on_bus_acquired(conn, _name):
-        MockVerdeService(conn)
+        MockVerdeService(conn, profile=profile)
 
     def on_name_lost(_conn, _name):
         print(f"Lost bus name {BUS_NAME}", file=sys.stderr)

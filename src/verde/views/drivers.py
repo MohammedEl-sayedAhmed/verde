@@ -317,7 +317,10 @@ class DriversPage(Adw.PreferencesPage):
             self._show_no_driver()
             return GLib.SOURCE_REMOVE  # type: ignore[no-any-return]
 
-        package = data.get("package", f"nvidia-driver-{version}")
+        loaded = data.get("loaded", True)
+        package = data.get("package_name", "") or data.get(
+            "package", f"nvidia-driver-{version}"
+        )
         variant = data.get("variant", "proprietary")
         cuda_version = data.get("cuda_version", "")
         context = data.get("context", "")
@@ -326,9 +329,19 @@ class DriversPage(Adw.PreferencesPage):
         self._no_driver_status.set_visible(False)
         self._current_driver_expander.set_visible(True)
         self._current_driver_expander.set_title(package)
-        self._current_driver_expander.set_subtitle(
-            _("Version {} - {} - Installed").format(version, variant.capitalize())
-        )
+        if loaded:
+            self._current_driver_expander.set_subtitle(
+                _("Version {} - {} - Installed").format(
+                    version, variant.capitalize()
+                )
+            )
+        else:
+            self._current_driver_expander.set_subtitle(
+                _("Version {} - {} - Installed (module not loaded)").format(
+                    version, variant.capitalize()
+                )
+            )
+            self._current_driver_expander.add_css_class("warning")
 
         cuda_val = cuda_version if cuda_version else _("Not available")
         context_val = context if context else _("Standard")

@@ -39,6 +39,8 @@ for _name in (
     "preflight",
     "apt_errors",
     "snapshot_manager",
+    "degraded_states",
+    "sysfs_gpu",
 ):
     _mod_path = DAEMON_SRC / f"{_name}.py"
     if _mod_path.exists():

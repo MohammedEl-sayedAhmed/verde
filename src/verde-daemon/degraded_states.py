@@ -24,6 +24,7 @@ class DegradedState(enum.Enum):
     NO_GPU = "no_gpu"
     NOUVEAU_ACTIVE = "nouveau_active"
     NO_DRIVER = "no_driver"
+    DRIVER_NOT_LOADED = "driver_not_loaded"
     GPU_LOST = "gpu_lost"
     NVML_UNAVAILABLE = "nvml_unavailable"
 
@@ -34,6 +35,9 @@ _STATE_MESSAGES: dict[DegradedState, str] = {
     DegradedState.NO_GPU: "No NVIDIA GPU detected on this system",
     DegradedState.NOUVEAU_ACTIVE: ("NVIDIA GPU is using the open-source nouveau driver"),
     DegradedState.NO_DRIVER: "No NVIDIA driver is installed",
+    DegradedState.DRIVER_NOT_LOADED: (
+        "NVIDIA driver package is installed but the kernel module is not loaded"
+    ),
     DegradedState.GPU_LOST: ("GPU is no longer responding — it may have fallen off the bus"),
     DegradedState.NVML_UNAVAILABLE: "NVIDIA management library is not available",
 }
@@ -52,13 +56,22 @@ def detect_driver_type() -> str:
     return "none"
 
 
-def detect_degraded_state(nvml: NvmlWrapper) -> DegradedState:
+def detect_degraded_state(
+    nvml: NvmlWrapper,
+    *,
+    driver_installed: bool = False,
+) -> DegradedState:
     """Determine current degraded state from NVML and sysfs checks.
 
     Parameters
     ----------
     nvml : NvmlWrapper
         Initialized (or failed-to-initialize) NVML wrapper instance.
+    driver_installed : bool
+        Whether a driver *package* is installed (from dpkg), even if the
+        kernel module is not loaded.  When ``True`` and the sysfs check
+        would normally return ``NO_DRIVER``, the more accurate
+        ``DRIVER_NOT_LOADED`` is returned instead.
 
     Returns
     -------
@@ -67,13 +80,18 @@ def detect_degraded_state(nvml: NvmlWrapper) -> DegradedState:
     """
     from verde_daemon.nvml_wrapper import Unavailable
 
+    def _no_driver_or_not_loaded() -> DegradedState:
+        if driver_installed:
+            return DegradedState.DRIVER_NOT_LOADED
+        return DegradedState.NO_DRIVER
+
     # 1. NVML library loaded?
     if nvml._lib is None:
         driver = detect_driver_type()
         if driver == "nouveau":
             return DegradedState.NOUVEAU_ACTIVE
         if driver == "none":
-            return DegradedState.NO_DRIVER
+            return _no_driver_or_not_loaded()
         return DegradedState.NVML_UNAVAILABLE
 
     # 2. Device count check
@@ -83,7 +101,7 @@ def detect_degraded_state(nvml: NvmlWrapper) -> DegradedState:
         if driver == "nouveau":
             return DegradedState.NOUVEAU_ACTIVE
         if driver == "none":
-            return DegradedState.NO_DRIVER
+            return _no_driver_or_not_loaded()
         return DegradedState.NO_GPU
 
     # 3. Driver type check (NVML loaded but driver might be nouveau)
@@ -91,7 +109,7 @@ def detect_degraded_state(nvml: NvmlWrapper) -> DegradedState:
     if driver == "nouveau":
         return DegradedState.NOUVEAU_ACTIVE
     if driver == "none":
-        return DegradedState.NO_DRIVER
+        return _no_driver_or_not_loaded()
 
     return DegradedState.NORMAL
 

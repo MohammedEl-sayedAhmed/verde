@@ -167,8 +167,18 @@ class VerdeService:
         # Power manager (Story 4.1)
         self._power_manager = PowerManager()
 
-        # Degraded state tracking — re-detected each poll cycle
-        self._current_degraded_state: DegradedState = detect_degraded_state(self._nvml)
+        # Degraded state tracking — re-detected each poll cycle.
+        # Check whether a driver package is installed (even if the kernel
+        # module is not loaded) so degraded-state detection can distinguish
+        # NO_DRIVER from DRIVER_NOT_LOADED.
+        try:
+            _drv_info = self._driver_manager.get_current_driver()
+            self._driver_installed = bool(_drv_info.get("version"))
+        except Exception:
+            self._driver_installed = False
+        self._current_degraded_state: DegradedState = detect_degraded_state(
+            self._nvml, driver_installed=self._driver_installed,
+        )
 
         # Load introspection XML
         if introspection_xml is not None:
@@ -265,7 +275,9 @@ class VerdeService:
                 )
 
             # Re-detect degraded state each cycle; emit signal on change
-            new_state = detect_degraded_state(self._nvml)
+            new_state = detect_degraded_state(
+                self._nvml, driver_installed=self._driver_installed,
+            )
             # GPU-lost override: if GPU was available and now stats say lost
             if stats.get("gpu_lost") and stats["gpu_lost"].get_boolean():
                 new_state = DegradedState.GPU_LOST
@@ -1859,9 +1871,46 @@ class VerdeService:
     # GPU data builders
     # ------------------------------------------------------------------
 
+    def _build_partial_gpu_info(self) -> dict[str, GLib.Variant]:
+        """Build partial GPU info from sysfs + dpkg when NVML is unavailable.
+
+        Returns ``available=False`` but includes whatever static data can
+        be gathered without NVML (GPU name from PCI IDs, driver version
+        from dpkg, PCI bus address from sysfs).
+        """
+        from verde_daemon.sysfs_gpu import detect_nvidia_gpus_sysfs
+
+        driver_info = self._driver_manager.get_current_driver()
+        result: dict[str, GLib.Variant] = {
+            "available": GLib.Variant("b", False),
+            "reason": GLib.Variant(
+                "s", "Driver installed but kernel module not loaded",
+            ),
+        }
+
+        if driver_info.get("version"):
+            result["driver_version"] = GLib.Variant("s", driver_info["version"])
+        result["driver_type"] = GLib.Variant(
+            "s", driver_info.get("driver_type", "none"),
+        )
+        result["loaded"] = GLib.Variant("b", False)
+
+        gpus = detect_nvidia_gpus_sysfs()
+        if gpus:
+            result["name"] = GLib.Variant("s", gpus[0].get("name", "NVIDIA GPU"))
+            result["device_count"] = GLib.Variant("i", len(gpus))
+            result["pci_bus_id"] = GLib.Variant(
+                "s", gpus[0].get("pci_bus_id", ""),
+            )
+        return result
+
     def _build_gpu_info(self) -> dict[str, GLib.Variant]:
         """Build GetGPUInfo response from NVML data."""
         if not self._nvml_available:
+            # If a driver package is installed, return partial info from
+            # sysfs + dpkg rather than a bare "unavailable" response.
+            if self._driver_installed:
+                return self._build_partial_gpu_info()
             return self._unavailable_response("NVIDIA driver not loaded")
 
         info = self._nvml.get_all_gpu_info(0)
@@ -2157,12 +2206,25 @@ class VerdeService:
             dc = 0
         driver = detect_driver_type()
         info = build_state_info(self._current_degraded_state, driver, int(dc))
-        return {
+        result: dict[str, GLib.Variant] = {
             "state": GLib.Variant("s", info["state"]),
             "driver_type": GLib.Variant("s", info["driver_type"]),
             "device_count": GLib.Variant("i", info["device_count"]),
             "message": GLib.Variant("s", info["message"]),
         }
+        # Include driver package info when driver is installed but not loaded
+        if self._current_degraded_state == DegradedState.DRIVER_NOT_LOADED:
+            try:
+                drv = self._driver_manager.get_current_driver()
+                if drv.get("version"):
+                    result["driver_version"] = GLib.Variant("s", drv["version"])
+                if drv.get("package_name"):
+                    result["package_name"] = GLib.Variant(
+                        "s", drv["package_name"],
+                    )
+            except Exception:
+                log.debug("Could not enrich degraded state with driver info")
+        return result
 
     @staticmethod
     def _unavailable_response(reason: str) -> dict[str, GLib.Variant]:

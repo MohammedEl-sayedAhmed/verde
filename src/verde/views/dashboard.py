@@ -101,6 +101,17 @@ _DEGRADED_STATES: dict[str, dict[str, str | None]] = {
         "icon": "system-software-install-symbolic",
         "action": "Install Driver",
     },
+    "driver_not_loaded": {
+        "title": "Driver Installed \u2014 Module Not Loaded",
+        "description": (
+            "NVIDIA driver package is installed but the kernel module "
+            "is not loaded. This usually means the DKMS module wasn\u2019t "
+            "built for your current kernel, or the module failed to load.\n\n"
+            "Try running: sudo dkms autoinstall"
+        ),
+        "icon": "dialog-warning-symbolic",
+        "action": "View Drivers",
+    },
     "daemon_unreachable": {
         "title": "System Service Unavailable",
         "description": (

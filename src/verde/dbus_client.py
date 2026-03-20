@@ -170,6 +170,14 @@ class VerdeDBusClient(GObject.Object):
 
     # ── Method calls ─────────────────────────────────────────────────
 
+    # Methods that involve apt/dpkg operations may be slow on some machines.
+    _SLOW_METHODS: typing.ClassVar[set[str]] = {
+        "ListAvailableDrivers",
+        "InstallDriver",
+        "RollbackDriver",
+        "RepairDpkg",
+    }
+
     def call_method_async(
         self,
         method_name: str,
@@ -191,11 +199,13 @@ class VerdeDBusClient(GObject.Object):
             log.warning("Cannot call %s — not connected", method_name)
             return
 
+        timeout_ms = 60000 if method_name in self._SLOW_METHODS else 5000
+
         self._proxy.call(
             method_name,
             parameters,
             Gio.DBusCallFlags.NONE,
-            5000,  # timeout ms
+            timeout_ms,
             None,  # cancellable
             callback or self._default_callback,
         )

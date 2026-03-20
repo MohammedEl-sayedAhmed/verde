@@ -166,13 +166,32 @@ class TestGetAvailablePackages:
 
 class TestEnumerateNvidiaPackages:
     def test_parses_dpkg_output(self, dm):
+        """Each pattern is queried separately; only the first pattern matches."""
         with patch.object(dm, "_run_cmd") as mock_run:
-            mock_run.return_value = _completed("nvidia-driver-550\t550.120-0ubuntu1\tii\n")
+            mock_run.side_effect = [
+                _completed("nvidia-driver-550\t550.120-0ubuntu1\tii\n"),
+                None,  # nvidia-dkms-* — no matches
+                None,  # linux-modules-nvidia-* — no matches
+            ]
             pkgs = dm._enumerate_nvidia_packages()
         assert len(pkgs) == 1
         assert pkgs[0]["package_name"] == "nvidia-driver-550"
         assert pkgs[0]["version"] == "550.120-0ubuntu1"
         assert pkgs[0]["status"] == "ii"
+
+    def test_multiple_patterns_match(self, dm):
+        """All three patterns return results."""
+        with patch.object(dm, "_run_cmd") as mock_run:
+            mock_run.side_effect = [
+                _completed("nvidia-driver-535\t535.288-0ubuntu1\tii\n"),
+                _completed("nvidia-dkms-535\t535.288-0ubuntu1\tii\n"),
+                None,
+            ]
+            pkgs = dm._enumerate_nvidia_packages()
+        assert len(pkgs) == 2
+        names = {p["package_name"] for p in pkgs}
+        assert "nvidia-driver-535" in names
+        assert "nvidia-dkms-535" in names
 
     def test_dpkg_fails(self, dm):
         with patch.object(dm, "_run_cmd", return_value=None):
