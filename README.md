@@ -23,13 +23,9 @@ Verde is a graphical tool for managing NVIDIA GPUs on Ubuntu. It monitors GPU he
 
 ## Installation
 
-### From PPA (recommended)
+### From PPA (coming soon)
 
-```bash
-sudo add-apt-repository ppa:verde-gpu/stable
-sudo apt update
-sudo apt install verde
-```
+A PPA for easy installation is planned. For now, build from source.
 
 ### From source
 
