@@ -4,3 +4,4 @@ usr/share/dbus-1/system.d/com.verde.Manager.conf
 usr/share/dbus-1/system-services/com.verde.Manager.service
 usr/lib/systemd/system/verde-daemon.service
 usr/share/polkit-1/actions/com.verde.policy
+usr/share/verde/com.verde.Manager.xml
