@@ -7,9 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  build:
-    name: Build & Test
+  # ── PR checks (<5 min budget) ──────────────────────────────────────
+  lint-and-test:
+    name: Lint, Type Check & Test
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
 
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +36,7 @@ jobs:
             xvfb
 
       - name: Install Python tools
-        run: pip install --break-system-packages ruff mypy pytest
+        run: pip install --break-system-packages ruff mypy pytest pytest-cov bandit
 
       - name: Meson setup
         run: meson setup builddir
@@ -45,14 +47,81 @@ jobs:
       - name: Meson test (desktop-file, appstream validation)
         run: meson test -C builddir --print-errorlogs
 
-      - name: Lint (ruff)
+      - name: Lint (ruff check)
         run: ruff check src/ tests/
 
-      - name: Format check (ruff)
+      - name: Format check (ruff format)
         run: ruff format --check src/ tests/
 
       - name: Type check (mypy)
         run: mypy src/verde/ --ignore-missing-imports
 
+      - name: Security scan (bandit)
+        run: bandit -r src/verde-daemon/ -ll -q
+
       - name: Unit tests
-        run: xvfb-run pytest tests/unit/ tests/integration/ -v
+        run: |
+          PYTHONPATH=src:src/verde-daemon xvfb-run pytest tests/unit/ tests/security/ tests/accessibility/ -v \
+            --cov=verde --cov=verde_daemon --cov-report=xml --cov-report=term-missing
+
+      - name: Enforcement rules — no shell=True
+        run: |
+          ! grep -rn 'shell=True' src/ --include='*.py' || { echo "FAIL: shell=True found"; exit 1; }
+
+      - name: Enforcement rules — no direct NVML in GUI
+        run: |
+          ! grep -rn 'import.*nvml\|from.*nvml' src/verde/ --include='*.py' || { echo "FAIL: NVML import in GUI"; exit 1; }
+
+      - name: Enforcement rules — no UnixProcessSubject
+        run: |
+          ! grep -rn 'UnixProcessSubject' src/ --include='*.py' || { echo "FAIL: UnixProcessSubject found"; exit 1; }
+
+  # ── Merge checks (push to main only, <20 min) ─────────────────────
+  integration:
+    name: Integration & Package
+    runs-on: ubuntu-24.04
+    if: github.event_name == 'push'
+    needs: lint-and-test
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            blueprint-compiler \
+            python3-gi \
+            python3-gi-cairo \
+            gir1.2-gtk-4.0 \
+            gir1.2-adw-1 \
+            meson \
+            ninja-build \
+            gettext \
+            desktop-file-utils \
+            appstream \
+            python3-pip \
+            xvfb \
+            debhelper \
+            devscripts \
+            lintian
+
+      - name: Install Python tools
+        run: pip install --break-system-packages ruff mypy pytest pytest-cov
+
+      - name: Meson setup & compile
+        run: meson setup builddir && meson compile -C builddir
+
+      - name: Integration tests
+        run: |
+          PYTHONPATH=src:src/verde-daemon xvfb-run pytest tests/ -v \
+            --cov=verde --cov=verde_daemon --cov-report=term-missing
+
+      - name: Build .deb package
+        run: debuild -us -uc -b
+
+      - name: Lintian check
+        run: lintian --fail-on error ../*.changes

@@ -1,0 +1,43 @@
+Source: verde
+Section: utils
+Priority: optional
+Maintainer: Verde Contributors <verde-gpu@protonmail.com>
+Build-Depends: debhelper-compat (= 13),
+               meson (>= 0.62),
+               blueprint-compiler,
+               libgtk-4-dev,
+               libadwaita-1-dev,
+               python3-gi,
+               gettext,
+               desktop-file-utils,
+               appstream
+Standards-Version: 4.6.2
+Homepage: https://github.com/verde-gpu/verde
+Rules-Requires-Root: no
+
+Package: verde
+Architecture: all
+Depends: ${misc:Depends},
+         python3,
+         python3-gi,
+         gir1.2-gtk-4.0,
+         gir1.2-adw-1,
+         verde-daemon (= ${binary:Version})
+Description: NVIDIA GPU management tool — GUI
+ Verde provides a graphical interface for managing NVIDIA GPU drivers,
+ monitoring GPU health, detecting power/suspend issues, and applying
+ one-click fixes on Ubuntu systems.
+
+Package: verde-daemon
+Architecture: all
+Depends: ${misc:Depends},
+         python3,
+         python3-gi,
+         systemd,
+         dbus,
+         apt,
+         polkitd | policykit-1
+Description: NVIDIA GPU management daemon
+ System daemon for Verde that handles driver installation, power
+ management, snapshot/rollback operations, and GPU monitoring via
+ D-Bus. Runs as a systemd service with Polkit authorization.

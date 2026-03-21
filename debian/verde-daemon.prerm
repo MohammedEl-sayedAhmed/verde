@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "remove" ]; then
+    # Stop and disable the Verde daemon service
+    systemctl stop verde-daemon.service || true
+    systemctl disable verde-daemon.service || true
+fi
+
+#DEBHELPER#

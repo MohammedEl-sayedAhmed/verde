@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    # Reload systemd to pick up new/changed unit files
+    systemctl daemon-reload || true
+    # Reload D-Bus configuration
+    dbus-send --system --type=method_call \
+        --dest=org.freedesktop.DBus / \
+        org.freedesktop.DBus.ReloadConfig || true
+fi
+
+#DEBHELPER#

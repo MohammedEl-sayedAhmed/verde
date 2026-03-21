@@ -1,0 +1,7 @@
+usr/bin/verde
+usr/share/verde/verde/
+usr/share/verde/verde.gresource
+usr/share/applications/com.verde.app.desktop
+usr/share/icons/
+usr/share/glib-2.0/schemas/com.verde.app.gschema.xml
+usr/share/metainfo/com.verde.app.metainfo.xml
