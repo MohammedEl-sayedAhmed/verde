@@ -13,6 +13,7 @@ daemon_sources = [
   '__init__.py',
   'apt_errors.py',
   'audit.py',
+  'cli_recovery.py',
   'degraded_states.py',
   'diagnostics.py',
   'driver_manager.py',
@@ -23,11 +24,13 @@ daemon_sources = [
   'pending_summary.py',
   'polkit.py',
   'power_manager.py',
-  'rate_limiter.py',
   'preflight.py',
+  'rate_limiter.py',
+  'recovery_diagnostics.py',
   'service.py',
   'snapshot_manager.py',
   'state_tracker.py',
+  'sysfs_gpu.py',
   'validators.py',
 ]
 
