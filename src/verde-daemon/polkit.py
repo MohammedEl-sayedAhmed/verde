@@ -1,6 +1,6 @@
 """Polkit authorization helper for Verde D-Bus methods (FR36, NFR-SEC-5).
 
-Uses SystemBusName subject (NOT UnixProcessSubject) per AR-17.
+Uses SystemBusName subject (not Unix process subject) per AR-17.
 """
 
 from __future__ import annotations
