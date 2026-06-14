@@ -1,7 +1,7 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: verde
-Upstream-Contact: verde-gpu@protonmail.com
-Source: https://github.com/verde-gpu/verde
+Upstream-Contact: Mohammed El-sayed Ahmed <MohammedEl-sayedAhmed@users.noreply.github.com>
+Source: https://github.com/MohammedEl-sayedAhmed/verde
 
 Files: *
 Copyright: 2026 Verde Contributors

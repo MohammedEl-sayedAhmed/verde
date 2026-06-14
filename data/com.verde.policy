@@ -4,7 +4,7 @@
   "http://www.freedesktop.org/standards/PolicyKit/1.0/policyconfig.dtd">
 <policyconfig>
   <vendor>Verde</vendor>
-  <vendor_url>https://github.com/verde-gpu/verde</vendor_url>
+  <vendor_url>https://github.com/MohammedEl-sayedAhmed/verde</vendor_url>
 
   <!-- Read-only GPU monitoring queries -->
   <action id="com.verde.monitor">

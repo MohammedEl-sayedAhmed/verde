@@ -17,7 +17,7 @@
 ## Development Setup
 
 ```bash
-git clone https://github.com/verde-gpu/verde.git
+git clone https://github.com/MohammedEl-sayedAhmed/verde.git
 cd verde
 meson setup builddir
 meson compile -C builddir

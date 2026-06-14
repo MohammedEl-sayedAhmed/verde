@@ -10,6 +10,7 @@
 
 ## Quick Links
 
+- [How It Works](how-it-works.md) — runtime flow, start to finish
 - [Architecture Overview](architecture.md)
 - [Module Reference](modules.md)
 - [D-Bus API Reference](dbus-api.md)

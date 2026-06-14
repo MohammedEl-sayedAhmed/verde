@@ -1,7 +1,7 @@
 Source: verde
 Section: utils
 Priority: optional
-Maintainer: Verde Contributors <verde-gpu@protonmail.com>
+Maintainer: Mohammed El-sayed Ahmed <MohammedEl-sayedAhmed@users.noreply.github.com>
 Build-Depends: debhelper-compat (= 13),
                meson (>= 0.62),
                blueprint-compiler,
@@ -12,7 +12,7 @@ Build-Depends: debhelper-compat (= 13),
                desktop-file-utils,
                appstream
 Standards-Version: 4.6.2
-Homepage: https://github.com/verde-gpu/verde
+Homepage: https://github.com/MohammedEl-sayedAhmed/verde
 Rules-Requires-Root: no
 
 Package: verde
