@@ -1,0 +1,70 @@
+name: Traffic Stats
+
+# Accumulates GitHub clone/view counts (the API only keeps 14 days) into an orphan
+# `traffic-stats` branch, and regenerates shields.io endpoint badges from the running total.
+#
+# Setup: create a repo secret VERDE_TRRAFIC_TOKEN — a token with traffic (push) access:
+#   • Fine-grained PAT: Administration → Read, Contents → Read and write
+#   • or a classic PAT with the `repo` scope
+# (The default GITHUB_TOKEN is unreliable for the traffic API, so we use a PAT.)
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, 03:17 UTC
+  workflow_dispatch: {} # allow manual runs
+
+# Least privilege: GITHUB_TOKEN only needs to read code for checkout.
+# All traffic reads and the push to `traffic-stats` use the VERDE_TRRAFIC_TOKEN PAT.
+permissions:
+  contents: read
+
+concurrency:
+  group: traffic-stats
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo (for the updater script)
+        uses: actions/checkout@v4
+
+      - name: Fetch traffic snapshots
+        env:
+          GH_TOKEN: ${{ secrets.VERDE_TRRAFIC_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api "repos/${REPO}/traffic/clones" > clones_api.json
+          gh api "repos/${REPO}/traffic/views"  > views_api.json
+
+      - name: Check out (or create) the traffic-stats data branch
+        env:
+          TRAFFIC_TOKEN: ${{ secrets.VERDE_TRRAFIC_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          remote="https://x-access-token:${TRAFFIC_TOKEN}@github.com/${REPO}.git"
+          if git clone --quiet --branch traffic-stats --single-branch "$remote" store 2>/dev/null; then
+            echo "Updating existing traffic-stats branch."
+          else
+            echo "Bootstrapping orphan traffic-stats branch."
+            rm -rf store && mkdir store
+            (cd store && git init -q -b traffic-stats && git remote add origin "$remote")
+          fi
+
+      - name: Update cumulative store + badges
+        run: |
+          python3 .github/scripts/update_traffic.py \
+            --store store --clones clones_api.json --views views_api.json
+
+      - name: Commit & push if changed
+        run: |
+          cd store
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No traffic change today."
+          else
+            git commit -q -m "traffic: update $(date -u +%F)"
+            git push -q origin HEAD:traffic-stats
+          fi
