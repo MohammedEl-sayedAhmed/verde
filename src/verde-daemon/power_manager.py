@@ -38,16 +38,43 @@ STATUS_WORKING = "working"
 STATUS_ISSUES_FOUND = "issues_found"
 STATUS_UNKNOWN = "unknown"
 
+# ── Display profile constants ─────────────────────────────────────────
+# How the NVIDIA GPU relates to the display pipeline, derived from the PRIME
+# mode (prime-select).  This determines which suspend/hibernate fix is
+# correct — see docs/nvidia-gpu-hibernate-ubuntu2404.md.
+PROFILE_STANDARD = "standard"  # NVIDIA drives displays (desktop / PRIME nvidia / undetectable)
+PROFILE_OFFLOAD = "offload"  # PRIME on-demand: iGPU drives displays, NVIDIA is render-offload only
+PROFILE_INTEGRATED = "integrated"  # PRIME intel: NVIDIA GPU disabled entirely
+
 # ── Service constants (Story 4.2) ────────────────────────────────────
 NVIDIA_SUSPEND_SERVICE = "nvidia-suspend.service"
 NVIDIA_RESUME_SERVICE = "nvidia-resume.service"
 NVIDIA_HIBERNATE_SERVICE = "nvidia-hibernate.service"
 
 MODPROBE_CONF_PATH = "/etc/modprobe.d/nvidia-power-management.conf"
+# Standard desktop / PRIME "nvidia" profile — the NVIDIA GPU drives displays,
+# so video memory is preserved across suspend and KMS stays enabled.
 MODPROBE_CONTENT = (
     "options nvidia NVreg_PreserveVideoMemoryAllocations=1\n"
     "options nvidia NVreg_TemporaryFilePath=/var/tmp\n"
 )
+# Render-offload profile (PRIME "on-demand" — an Optimus laptop where the
+# NVIDIA GPU drives no displays).  Taking nvidia out of the display/KMS path is
+# what makes hibernate reliable here: video-memory preservation is turned off
+# and nvidia-drm modesetting is disabled.  See
+# docs/nvidia-gpu-hibernate-ubuntu2404.md.
+MODPROBE_CONTENT_OFFLOAD = (
+    "options nvidia NVreg_PreserveVideoMemoryAllocations=0 NVreg_TemporaryFilePath=/var/tmp\n"
+    "options nvidia-drm modeset=0\n"
+)
+
+
+def _modprobe_content_for_profile(profile: str) -> str:
+    """Return the modprobe.d contents appropriate for *profile*."""
+    if profile == PROFILE_OFFLOAD:
+        return MODPROBE_CONTENT_OFFLOAD
+    return MODPROBE_CONTENT
+
 
 _SUSPEND_SERVICES = (NVIDIA_SUSPEND_SERVICE, NVIDIA_RESUME_SERVICE, NVIDIA_HIBERNATE_SERVICE)
 
@@ -147,6 +174,53 @@ class PowerManager:
         self._list_modprobe_confs = list_modprobe_confs or _default_list_modprobe_confs
         self._write = write_file or _default_write_file
 
+    # ── Display profile detection (Optimus / PRIME) ──────────────────────
+
+    def _get_gpu_mode(self) -> str:
+        """Return the PRIME GPU mode via ``prime-select query``.
+
+        Returns one of ``"nvidia"``, ``"intel"``, ``"on-demand"`` (the values
+        prime-select reports), or ``""`` when prime-select is unavailable or
+        the mode cannot be determined (e.g. desktop GPUs with no PRIME).
+        """
+        try:
+            result = self._run(["prime-select", "query"])
+            if getattr(result, "returncode", 1) != 0:
+                return ""
+            mode = result.stdout.strip().lower()
+        except Exception:
+            # prime-select missing/timeout/unexpected — a desktop GPU or an
+            # undetectable state. Never let display detection crash the status
+            # check; fall back to the standard profile.
+            log.debug("prime-select query failed; assuming no PRIME", exc_info=True)
+            return ""
+        if mode in ("nvidia", "intel", "on-demand"):
+            return mode
+        return ""
+
+    def _detect_display_profile(self) -> tuple[str, str]:
+        """Detect ``(gpu_mode, display_profile)``.
+
+        Maps the PRIME mode to a display profile that determines the correct
+        suspend/hibernate configuration:
+
+        * ``on-demand`` → :data:`PROFILE_OFFLOAD` — the NVIDIA GPU drives no
+          displays, so it must be kept out of the display/KMS path.
+        * ``intel`` → :data:`PROFILE_INTEGRATED` — the NVIDIA GPU is disabled.
+        * everything else (``nvidia``, desktop, undetectable) →
+          :data:`PROFILE_STANDARD`.
+
+        The conservative default is :data:`PROFILE_STANDARD`, so an
+        undetectable configuration keeps the original (display-GPU) behaviour
+        and never makes an unknown system worse.
+        """
+        mode = self._get_gpu_mode()
+        if mode == "on-demand":
+            return mode, PROFILE_OFFLOAD
+        if mode == "intel":
+            return mode, PROFILE_INTEGRATED
+        return (mode or "unknown"), PROFILE_STANDARD
+
     def get_power_status(self) -> dict[str, Any]:
         """Return full power status dict suitable for D-Bus ``a{sv}`` wrapping.
 
@@ -157,6 +231,11 @@ class PowerManager:
         issues: list[dict[str, Any]] = []
         has_unknown = False
 
+        # Detect the display profile once (Optimus / PRIME).  The correct
+        # suspend/hibernate configuration depends on whether the NVIDIA GPU
+        # drives displays — see docs/nvidia-gpu-hibernate-ubuntu2404.md.
+        gpu_mode, profile = self._detect_display_profile()
+
         suspend_active = False
         hibernate_active = False
         secure_boot_enabled = False
@@ -165,7 +244,7 @@ class PowerManager:
 
         # ── Suspend services ──────────────────────────────────────────
         try:
-            suspend_issues, suspend_active = self._check_suspend_services()
+            suspend_issues, suspend_active = self._check_suspend_services(profile)
             issues.extend(suspend_issues)
         except Exception:
             log.exception("Suspend service check failed")
@@ -182,7 +261,7 @@ class PowerManager:
 
         # ── Hibernate ─────────────────────────────────────────────────
         try:
-            hibernate_issues, hibernate_active = self._check_hibernate()
+            hibernate_issues, hibernate_active = self._check_hibernate(profile)
             issues.extend(hibernate_issues)
         except Exception:
             log.exception("Hibernate check failed")
@@ -216,7 +295,7 @@ class PowerManager:
 
         # ── Wayland ───────────────────────────────────────────────────
         try:
-            wayland_issues, wayland_session = self._check_wayland_issues()
+            wayland_issues, wayland_session = self._check_wayland_issues(profile)
             issues.extend(wayland_issues)
         except Exception:
             log.exception("Wayland check failed")
@@ -247,19 +326,71 @@ class PowerManager:
             "secure_boot_enabled": secure_boot_enabled,
             "mok_enrolled": mok_enrolled,
             "wayland_session": wayland_session,
+            "gpu_mode": gpu_mode,
+            "display_profile": profile,
         }
 
     # ── Task 2: Suspend service detection ───────────────────────────────
 
     def _check_suspend_services(
         self,
+        profile: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Check NVIDIA suspend/resume systemd services.
 
-        Returns (issues, suspend_active) where *suspend_active* is True only
-        when both ``nvidia-suspend.service`` and ``nvidia-resume.service`` are
-        enabled.
+        Returns (issues, suspend_active).  For the standard (display-GPU)
+        profile *suspend_active* is True only when both
+        ``nvidia-suspend.service`` and ``nvidia-resume.service`` are enabled.
+        On render-offload / integrated laptops the NVIDIA GPU is not in the
+        display path, so the expectations invert — see
+        docs/nvidia-gpu-hibernate-ubuntu2404.md.
         """
+        if profile is None:
+            _, profile = self._detect_display_profile()
+
+        if profile == PROFILE_INTEGRATED:
+            return (
+                [
+                    _make_issue(
+                        ISSUE_SUSPEND,
+                        SEVERITY_OK,
+                        "Suspend is handled by the integrated GPU",
+                        "The system is in Intel (integrated-only) mode, so the "
+                        "NVIDIA GPU is disabled and plays no part in "
+                        "suspend/resume. No NVIDIA suspend services are required.",
+                        fixable=False,
+                        already_fixed=True,
+                    )
+                ],
+                True,
+            )
+
+        if profile == PROFILE_OFFLOAD:
+            # On a render-offload laptop (PRIME on-demand) the NVIDIA GPU drives
+            # no displays.  The nvidia sleep services, with their VT switch, can
+            # strand the screen on resume, so the healthy state is that they are
+            # DISABLED.  The remediation is folded into the hibernate fix, which
+            # writes the offload modprobe config and disables these services in
+            # one step; see _check_hibernate / fix_hibernate.
+            return (
+                [
+                    _make_issue(
+                        ISSUE_SUSPEND,
+                        SEVERITY_OK,
+                        "Suspend is managed by the render-offload profile",
+                        "The NVIDIA GPU is render-offload only (PRIME "
+                        "on-demand) and drives no displays. Its suspend/resume "
+                        "handling is covered by the render-offload hibernate "
+                        "configuration rather than the standard NVIDIA sleep "
+                        "services.",
+                        fixable=False,
+                        already_fixed=True,
+                    )
+                ],
+                True,
+            )
+
+        # ── PROFILE_STANDARD (NVIDIA drives displays) ─────────────────
         issues: list[dict[str, Any]] = []
 
         # Critical services — must be enabled for suspend to work
@@ -330,30 +461,83 @@ class PowerManager:
 
     def _check_hibernate(
         self,
+        profile: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Check hibernate prerequisites.
 
-        Returns (issues, hibernate_active) where *hibernate_active* is True
-        when the hibernate service is enabled and basic prerequisites are met.
+        Returns (issues, hibernate_active).  The NVIDIA-specific requirement
+        depends on the display profile:
+
+        * standard   — ``nvidia-hibernate.service`` must be enabled;
+        * offload    — the render-offload modprobe config must be present and
+          the nvidia sleep services disabled (they can strand the screen on
+          resume when the GPU drives no displays);
+        * integrated — no NVIDIA configuration is required.
+
+        The generic prerequisites (kernel support, ``resume=``, swap,
+        ``sleep.conf``) are checked for every profile.  See
+        docs/nvidia-gpu-hibernate-ubuntu2404.md.
         """
+        if profile is None:
+            _, profile = self._detect_display_profile()
+
         issues: list[dict[str, Any]] = []
         problems_found = False
 
-        # 1. nvidia-hibernate.service enabled?
-        hibernate_enabled = self._is_service_enabled("nvidia-hibernate.service")
-        if not hibernate_enabled:
-            problems_found = True
-            issues.append(
-                _make_issue(
-                    ISSUE_HIBERNATE,
-                    SEVERITY_CRITICAL,
-                    "nvidia-hibernate.service is not enabled",
-                    "The NVIDIA hibernate service is not enabled. Without it, "
-                    "hibernation may fail or cause GPU issues on resume. Enable "
-                    "it with: systemctl enable nvidia-hibernate.service",
-                    fixable=True,
+        # 1. NVIDIA-specific requirement (varies by display profile).
+        # hibernate_enabled reflects whether the NVIDIA side is satisfied; for
+        # offload/integrated the hibernate service is not the gating factor.
+        hibernate_enabled = True
+        if profile == PROFILE_STANDARD:
+            hibernate_enabled = self._is_service_enabled("nvidia-hibernate.service")
+            if not hibernate_enabled:
+                problems_found = True
+                issues.append(
+                    _make_issue(
+                        ISSUE_HIBERNATE,
+                        SEVERITY_CRITICAL,
+                        "nvidia-hibernate.service is not enabled",
+                        "The NVIDIA hibernate service is not enabled. Without it, "
+                        "hibernation may fail or cause GPU issues on resume. Enable "
+                        "it with: systemctl enable nvidia-hibernate.service",
+                        fixable=True,
+                    )
                 )
-            )
+        elif profile == PROFILE_OFFLOAD:
+            if not self._check_modprobe_config(PROFILE_OFFLOAD):
+                problems_found = True
+                issues.append(
+                    _make_issue(
+                        ISSUE_HIBERNATE,
+                        SEVERITY_CRITICAL,
+                        "NVIDIA render-offload hibernate config is missing",
+                        "This is an Optimus laptop in PRIME on-demand mode, where "
+                        "the NVIDIA GPU drives no displays. Reliable hibernate "
+                        "requires taking nvidia out of the display path — "
+                        "NVreg_PreserveVideoMemoryAllocations=0 and nvidia-drm "
+                        f"modeset=0 in {MODPROBE_CONF_PATH} — which is not "
+                        "currently configured.",
+                        fixable=True,
+                    )
+                )
+            enabled_sleep = [s for s in _SUSPEND_SERVICES if self._is_service_enabled(s)]
+            if enabled_sleep:
+                problems_found = True
+                issues.append(
+                    _make_issue(
+                        ISSUE_HIBERNATE,
+                        SEVERITY_WARNING,
+                        "NVIDIA sleep services are enabled on a render-offload system",
+                        "The NVIDIA suspend/resume/hibernate services ("
+                        + ", ".join(enabled_sleep)
+                        + ") are enabled, but on a render-offload laptop the "
+                        "NVIDIA GPU drives no displays and these services can "
+                        "strand the screen on resume. They should be disabled.",
+                        fixable=True,
+                    )
+                )
+        # PROFILE_INTEGRATED: the NVIDIA GPU is disabled — no NVIDIA hibernate
+        # configuration is required; only the generic prerequisites below apply.
 
         # 2. Kernel supports hibernate? (/sys/power/state contains 'disk')
         power_state = self._read("/sys/power/state")
@@ -433,13 +617,31 @@ class PowerManager:
                 )
 
         if not problems_found:
+            if profile == PROFILE_OFFLOAD:
+                ok_detail = (
+                    "Hibernate is configured for render-offload: nvidia is kept "
+                    "out of the display path (PreserveVideoMemoryAllocations=0, "
+                    "nvidia-drm modeset=0) and the nvidia sleep services are "
+                    "disabled. Swap is configured and the resume parameter is "
+                    "present."
+                )
+            elif profile == PROFILE_INTEGRATED:
+                ok_detail = (
+                    "The NVIDIA GPU is disabled (Intel mode); hibernate needs no "
+                    "NVIDIA configuration. Swap is configured and the resume "
+                    "parameter is present."
+                )
+            else:
+                ok_detail = (
+                    "All hibernate prerequisites are met: service enabled, swap "
+                    "configured, resume parameter present."
+                )
             issues.append(
                 _make_issue(
                     ISSUE_HIBERNATE,
                     SEVERITY_OK,
                     "Hibernate is properly configured",
-                    "All hibernate prerequisites are met: service enabled, swap "
-                    "configured, resume parameter present.",
+                    ok_detail,
                     fixable=False,
                     already_fixed=True,
                 )
@@ -550,11 +752,20 @@ class PowerManager:
 
     def _check_wayland_issues(
         self,
+        profile: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """Check Wayland-specific NVIDIA configuration.
 
-        Returns (issues, is_wayland_session).
+        Returns (issues, is_wayland_session).  The NVIDIA Wayland requirements
+        (nvidia-drm modeset=1, GBM backend, wlroots cursor workaround) only
+        apply when the NVIDIA GPU actually drives displays.  On render-offload /
+        integrated laptops these are intentionally absent (modeset is off), so
+        demanding them would fight the correct hibernate configuration — see
+        docs/nvidia-gpu-hibernate-ubuntu2404.md.
         """
+        if profile is None:
+            _, profile = self._detect_display_profile()
+
         issues: list[dict[str, Any]] = []
 
         # Detect session type — daemon runs as root so $XDG_SESSION_TYPE
@@ -564,6 +775,40 @@ class PowerManager:
 
         if not is_wayland:
             return issues, False
+
+        # On laptops where the NVIDIA GPU drives no displays, the Intel iGPU
+        # handles Wayland; the NVIDIA-specific Wayland settings do not apply and
+        # nvidia-drm modeset is intentionally disabled for reliable hibernate.
+        if profile == PROFILE_INTEGRATED:
+            issues.append(
+                _make_issue(
+                    ISSUE_WAYLAND,
+                    SEVERITY_OK,
+                    "Wayland is handled by the integrated GPU",
+                    "The system is in Intel (integrated-only) mode, so Wayland "
+                    "runs on the Intel GPU and no NVIDIA Wayland configuration "
+                    "is required.",
+                    fixable=False,
+                    already_fixed=True,
+                )
+            )
+            return issues, True
+        if profile == PROFILE_OFFLOAD:
+            issues.append(
+                _make_issue(
+                    ISSUE_WAYLAND,
+                    SEVERITY_OK,
+                    "Wayland runs on the integrated GPU (render-offload)",
+                    "The NVIDIA GPU is render-offload only (PRIME on-demand) and "
+                    "drives no displays, so Wayland is driven by the Intel GPU. "
+                    "nvidia-drm modesetting is intentionally disabled here for "
+                    "reliable hibernate; Wayland-native NVIDIA offload is not "
+                    "available in this mode (use an X11 session for GPU offload).",
+                    fixable=False,
+                    already_fixed=True,
+                )
+            )
+            return issues, True
 
         # 1. nvidia-drm modeset=1
         modeset_found = self._check_modeset()
@@ -704,21 +949,80 @@ class PowerManager:
         except OSError as exc:
             return False, f"Error enabling {service}: {exc}"
 
-    def _check_modprobe_config(self) -> bool:
-        """Return True if the NVIDIA power management modprobe config exists with correct content."""
+    def _disable_service(self, service: str) -> tuple[bool, str]:
+        """Disable a systemd service.  Returns (success, message).
+
+        Disabling an already-disabled unit is a successful no-op.  Used by the
+        render-offload fix to take the NVIDIA sleep services out of the resume
+        path (they can strand the screen when the GPU drives no displays).
+        """
+        try:
+            result = self._run(
+                ["systemctl", "disable", service],
+                timeout=30,
+            )
+            if result.returncode == 0:
+                return True, f"Disabled {service}"
+            return False, f"Failed to disable {service}: {result.stderr.strip()}"
+        except subprocess.TimeoutExpired:
+            return False, f"Timed out disabling {service}"
+        except OSError as exc:
+            return False, f"Error disabling {service}: {exc}"
+
+    def _check_modprobe_config(self, profile: str | None = None) -> bool:
+        """Return True if the modprobe config matches *profile*'s expected content.
+
+        Standard profile markers: ``NVreg_PreserveVideoMemoryAllocations=1`` and
+        ``NVreg_TemporaryFilePath``.  Render-offload markers:
+        ``NVreg_PreserveVideoMemoryAllocations=0`` and ``nvidia-drm modeset=0``.
+        """
+        if profile is None:
+            _, profile = self._detect_display_profile()
         content = self._read(MODPROBE_CONF_PATH)
+        if profile == PROFILE_OFFLOAD:
+            return "NVreg_PreserveVideoMemoryAllocations=0" in content and "modeset=0" in content
         return (
             "NVreg_PreserveVideoMemoryAllocations=1" in content
             and "NVreg_TemporaryFilePath" in content
         )
 
-    def _write_modprobe_config(self) -> tuple[bool, str]:
-        """Write the NVIDIA power management modprobe config.  Returns (success, message)."""
+    def _write_modprobe_config(self, profile: str = PROFILE_STANDARD) -> tuple[bool, str]:
+        """Write the NVIDIA power management modprobe config for *profile*.
+
+        Returns (success, message).
+        """
         try:
-            self._write(MODPROBE_CONF_PATH, MODPROBE_CONTENT)
+            self._write(MODPROBE_CONF_PATH, _modprobe_content_for_profile(profile))
             return True, f"Wrote {MODPROBE_CONF_PATH}"
         except OSError as exc:
             return False, f"Failed to write {MODPROBE_CONF_PATH}: {exc}"
+
+    def _disable_sleep_services(self, op_id: str) -> tuple[bool, list[str], str]:
+        """Disable any enabled NVIDIA sleep services.
+
+        Returns ``(ok, disabled, error)`` where *disabled* lists the services
+        actually turned off.  Each change is recorded with the modification
+        tracker (when present) so it can be reverted.  Services already disabled
+        are skipped.  Used by the render-offload fix to keep the NVIDIA GPU out
+        of the resume path.
+        """
+        disabled: list[str] = []
+        for svc in _SUSPEND_SERVICES:
+            if not self._is_service_enabled(svc):
+                continue
+            ok, msg = self._disable_service(svc)
+            if not ok:
+                return False, disabled, msg
+            disabled.append(svc)
+            if self._tracker:
+                self._tracker.record(
+                    op_id,
+                    "service_disabled",
+                    svc,
+                    "enabled",
+                    f"Disabled {svc} for render-offload suspend/hibernate fix",
+                )
+        return True, disabled, ""
 
     def _run_update_initramfs(self) -> tuple[bool, str]:
         """Run ``update-initramfs -u``.  Returns (success, message)."""
@@ -756,6 +1060,43 @@ class PowerManager:
         """
         _completed = False
         try:
+            _, profile = self._detect_display_profile()
+
+            if profile == PROFILE_INTEGRATED:
+                _completed = True
+                complete_cb(
+                    op_id,
+                    True,
+                    "NVIDIA GPU is disabled (Intel mode) — no suspend services need changing.",
+                )
+                return
+
+            if profile == PROFILE_OFFLOAD:
+                # Render-offload: the correct action is to DISABLE the nvidia
+                # sleep services rather than enable them.
+                progress_cb(op_id, 10.0, "Disabling NVIDIA sleep services (render-offload)...")
+                ok, disabled, err = self._disable_sleep_services(op_id)
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, err)
+                    return
+                _completed = True
+                if disabled:
+                    complete_cb(
+                        op_id,
+                        True,
+                        "Disabled NVIDIA sleep services for render-offload: "
+                        + ", ".join(disabled)
+                        + ".",
+                    )
+                else:
+                    complete_cb(
+                        op_id,
+                        True,
+                        "NVIDIA sleep services are already disabled — no changes needed.",
+                    )
+                return
+
             # Step 1 (0-10%): Check services exist
             progress_cb(op_id, 5.0, "Checking NVIDIA suspend services...")
             missing = []
@@ -858,6 +1199,99 @@ class PowerManager:
         changes_made: list[str] = []
         _completed = False
         try:
+            _, profile = self._detect_display_profile()
+
+            if profile == PROFILE_INTEGRATED:
+                _completed = True
+                complete_cb(
+                    op_id,
+                    True,
+                    "Hibernate needs no NVIDIA configuration in Intel mode.",
+                )
+                return
+
+            if profile == PROFILE_OFFLOAD:
+                # Render-offload: write the offload modprobe config, disable the
+                # nvidia sleep services, and rebuild initramfs — one atomic fix
+                # that takes nvidia out of the display/resume path.
+                progress_cb(op_id, 10.0, "Checking render-offload configuration...")
+                config_ok = self._check_modprobe_config(PROFILE_OFFLOAD)
+                enabled_sleep = [s for s in _SUSPEND_SERVICES if self._is_service_enabled(s)]
+
+                if config_ok and not enabled_sleep:
+                    progress_cb(op_id, 75.0, "Verifying initramfs is up-to-date...")
+                    ok, msg = self._run_update_initramfs()
+                    if not ok:
+                        _completed = True
+                        complete_cb(op_id, False, msg)
+                        return
+                    _completed = True
+                    complete_cb(
+                        op_id,
+                        True,
+                        "Render-offload hibernate is already configured — verified initramfs.",
+                    )
+                    return
+
+                if not config_ok:
+                    progress_cb(op_id, 30.0, f"Writing {MODPROBE_CONF_PATH} (render-offload)...")
+                    ok, msg = self._write_modprobe_config(PROFILE_OFFLOAD)
+                    if not ok:
+                        _completed = True
+                        complete_cb(op_id, False, msg)
+                        return
+                    changes_made.append("Wrote render-offload modprobe config")
+                    if self._tracker:
+                        self._tracker.record(
+                            op_id,
+                            "config_changed",
+                            MODPROBE_CONF_PATH,
+                            None,
+                            "Wrote render-offload NVIDIA power management config",
+                        )
+
+                if enabled_sleep:
+                    progress_cb(op_id, 50.0, "Disabling NVIDIA sleep services...")
+                    ok, disabled, err = self._disable_sleep_services(op_id)
+                    if not ok:
+                        _completed = True
+                        complete_cb(op_id, False, err)
+                        return
+                    if disabled:
+                        changes_made.append("Disabled sleep services: " + ", ".join(disabled))
+
+                progress_cb(op_id, 75.0, "Rebuilding initramfs (this may take a minute)...")
+                ok, msg = self._run_update_initramfs()
+                if not ok:
+                    _completed = True
+                    complete_cb(op_id, False, msg)
+                    return
+                changes_made.append("Rebuilt initramfs")
+                if self._tracker:
+                    self._tracker.record(
+                        op_id,
+                        "initramfs_rebuilt",
+                        "initramfs",
+                        None,
+                        "Rebuilt initramfs for render-offload hibernate fix",
+                    )
+
+                progress_cb(op_id, 95.0, "Render-offload hibernate fix complete.")
+                _completed = True
+                complete_cb(
+                    op_id,
+                    True,
+                    "Render-offload hibernate configured: "
+                    + "; ".join(changes_made)
+                    + ". Reboot required.",
+                )
+                if reboot_cb:
+                    reboot_cb(
+                        True,
+                        "Reboot required to apply render-offload hibernate configuration changes.",
+                    )
+                return
+
             # Step 1 (0-10%): Check hibernate service exists
             progress_cb(op_id, 5.0, "Checking NVIDIA hibernate service...")
             if not self._check_service_exists(NVIDIA_HIBERNATE_SERVICE):
@@ -980,6 +1414,27 @@ class PowerManager:
 
     def get_preflight_suspend(self) -> dict[str, Any]:
         """Return pre-flight check for suspend fix as an ``a{sv}``-compatible dict."""
+        _, profile = self._detect_display_profile()
+
+        if profile == PROFILE_INTEGRATED:
+            return {"ready": True, "changes": [], "already_fixed": True}
+
+        if profile == PROFILE_OFFLOAD:
+            offload_changes: list[dict[str, str]] = []
+            offload_fixed = True
+            for svc in _SUSPEND_SERVICES:
+                enabled = self._is_service_enabled(svc)
+                if enabled:
+                    offload_fixed = False
+                offload_changes.append(
+                    {
+                        "description": f"Disable {svc} (render-offload)",
+                        "current_state": "enabled" if enabled else "disabled",
+                        "target_state": "disabled",
+                    }
+                )
+            return {"ready": True, "changes": offload_changes, "already_fixed": offload_fixed}
+
         changes: list[dict[str, str]] = []
         all_fixed = True
 
@@ -1006,6 +1461,44 @@ class PowerManager:
 
     def get_preflight_hibernate(self) -> dict[str, Any]:
         """Return pre-flight check for hibernate fix as an ``a{sv}``-compatible dict."""
+        _, profile = self._detect_display_profile()
+
+        if profile == PROFILE_INTEGRATED:
+            return {"ready": True, "changes": [], "already_fixed": True}
+
+        if profile == PROFILE_OFFLOAD:
+            offload_changes: list[dict[str, str]] = []
+            offload_fixed = True
+            config_ok = self._check_modprobe_config(PROFILE_OFFLOAD)
+            if not config_ok:
+                offload_fixed = False
+            offload_changes.append(
+                {
+                    "description": f"Write render-offload NVIDIA config to {MODPROBE_CONF_PATH}",
+                    "current_state": "present" if config_ok else "absent",
+                    "target_state": "present",
+                }
+            )
+            for svc in _SUSPEND_SERVICES:
+                enabled = self._is_service_enabled(svc)
+                if enabled:
+                    offload_fixed = False
+                offload_changes.append(
+                    {
+                        "description": f"Disable {svc}",
+                        "current_state": "enabled" if enabled else "disabled",
+                        "target_state": "disabled",
+                    }
+                )
+            offload_changes.append(
+                {
+                    "description": "Rebuild initramfs to apply module parameters",
+                    "current_state": "pending" if not config_ok else "up-to-date",
+                    "target_state": "up-to-date",
+                }
+            )
+            return {"ready": True, "changes": offload_changes, "already_fixed": offload_fixed}
+
         changes: list[dict[str, str]] = []
         all_fixed = True
 

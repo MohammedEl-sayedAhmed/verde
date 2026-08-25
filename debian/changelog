@@ -1,5 +1,7 @@
 verde (0.1.0) noble; urgency=medium
 
   * Initial release.
+  * Detect the Optimus/PRIME display profile and apply the matching
+    suspend/hibernate fix (render-offload vs standard).
 
  -- Mohammed El-sayed Ahmed <MohammedEl-sayedAhmed@users.noreply.github.com>  Thu, 20 Mar 2026 12:00:00 +0000

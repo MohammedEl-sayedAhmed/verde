@@ -1111,6 +1111,11 @@ class VerdeService:
                 "secure_boot_enabled": GLib.Variant("b", status["secure_boot_enabled"]),
                 "mok_enrolled": GLib.Variant("b", status["mok_enrolled"]),
                 "wayland_session": GLib.Variant("b", status["wayland_session"]),
+                # Optimus / PRIME display profile (see power_manager.py). Older
+                # clients ignore unknown keys; .get() keeps this backward- and
+                # forward-compatible if the manager ever omits them.
+                "gpu_mode": GLib.Variant("s", status.get("gpu_mode", "unknown")),
+                "display_profile": GLib.Variant("s", status.get("display_profile", "standard")),
             }
             invocation.return_value(GLib.Variant.new_tuple(GLib.Variant("a{sv}", gv_result)))
         except Exception:

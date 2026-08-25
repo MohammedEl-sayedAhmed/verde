@@ -11,6 +11,11 @@
       install and switch drivers, fix suspend/hibernate issues, and generate
       diagnostic reports — all from a simple, safe interface.
     </p>
+    <p>
+      On hybrid Optimus laptops Verde detects the PRIME display profile
+      (render-offload, integrated, or standard) and applies the matching
+      suspend/hibernate configuration automatically.
+    </p>
   </description>
   <launchable type="desktop-id">com.verde.app.desktop</launchable>
   <url type="homepage">https://github.com/MohammedEl-sayedAhmed/verde</url>

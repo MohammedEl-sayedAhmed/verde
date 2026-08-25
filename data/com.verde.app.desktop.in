@@ -6,5 +6,5 @@ Icon=com.verde.app
 Terminal=false
 Type=Application
 Categories=System;Settings;HardwareSettings;
-Keywords=nvidia;gpu;driver;graphics;
+Keywords=nvidia;gpu;driver;graphics;hibernate;suspend;optimus;prime;
 StartupNotify=true

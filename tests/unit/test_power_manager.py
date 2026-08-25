@@ -13,9 +13,13 @@ from power_manager import (
     ISSUE_WAYLAND,
     MODPROBE_CONF_PATH,
     MODPROBE_CONTENT,
+    MODPROBE_CONTENT_OFFLOAD,
     NVIDIA_HIBERNATE_SERVICE,
     NVIDIA_RESUME_SERVICE,
     NVIDIA_SUSPEND_SERVICE,
+    PROFILE_INTEGRATED,
+    PROFILE_OFFLOAD,
+    PROFILE_STANDARD,
     SEVERITY_CRITICAL,
     SEVERITY_OK,
     SEVERITY_WARNING,
@@ -1130,3 +1134,286 @@ class TestOperationGuard:
         assert len(calls) > 0
         for cmd, _kwargs in calls:
             assert isinstance(cmd, list)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Optimus / PRIME display-profile awareness (render-offload + integrated)
+# See docs/nvidia-gpu-hibernate-ubuntu2404.md
+# ══════════════════════════════════════════════════════════════════════
+
+
+def _with_prime(mode: str, base):
+    """Wrap *base* run fn so ``prime-select query`` reports *mode*."""
+
+    def _run(cmd, **kw):
+        if cmd[:2] == ["prime-select", "query"]:
+            return _make_cp(stdout=mode + "\n", returncode=0)
+        return base(cmd, **kw)
+
+    return _run
+
+
+def _read_offload_ok(path: str) -> str:
+    """Reader: valid hibernate prereqs + render-offload modprobe config."""
+    if path == MODPROBE_CONF_PATH:
+        return MODPROBE_CONTENT_OFFLOAD
+    return _read_hibernate_ok(path)
+
+
+def _run_offload_services(mode="on-demand", *, sleep_enabled=False):
+    """Run fn: prime-select *mode* + nvidia sleep services enabled/disabled."""
+    out = "enabled" if sleep_enabled else "disabled"
+    rc = 0 if sleep_enabled else 1
+
+    def _base(cmd, **kw):
+        if cmd[:2] == ["systemctl", "is-enabled"] and len(cmd) == 3:
+            if cmd[2] in _SUSPEND_SERVICES:
+                return _make_cp(stdout=out + "\n", returncode=rc)
+            return _make_cp(stdout="disabled\n", returncode=1)
+        if cmd[:2] == ["mokutil", "--sb-state"]:
+            return _make_cp(stdout="SecureBoot disabled\n")
+        return _make_cp(returncode=1)
+
+    return _with_prime(mode, _base)
+
+
+def _run_offload_fix(mode="on-demand", *, enabled=None, disable_ok=True, initramfs_ok=True):
+    """Run fn for offload fixes: handles is-enabled / disable / update-initramfs."""
+    _enabled = dict(enabled or {})
+
+    def _base(cmd, **kw):
+        if cmd[:2] == ["systemctl", "is-enabled"] and len(cmd) == 3:
+            svc = cmd[2]
+            on = _enabled.get(svc, False)
+            return _make_cp(
+                stdout=("enabled\n" if on else "disabled\n"), returncode=0 if on else 1
+            )
+        if cmd[:2] == ["systemctl", "disable"] and len(cmd) == 3:
+            svc = cmd[2]
+            if disable_ok:
+                _enabled[svc] = False
+                return _make_cp(returncode=0)
+            return _make_cp(returncode=1, stdout="Failed to disable\n")
+        if cmd[:2] == ["update-initramfs", "-u"]:
+            return _make_cp(
+                returncode=0 if initramfs_ok else 1, stdout="" if initramfs_ok else "err\n"
+            )
+        return _make_cp(returncode=1)
+
+    return _with_prime(mode, _base)
+
+
+class TestDisplayProfileDetection:
+    """Detection of the PRIME display profile from prime-select."""
+
+    def test_gpu_mode_on_demand_is_offload(self):
+        pm = PowerManager(
+            run=_with_prime("on-demand", _run_for_services()), read_file=lambda p: ""
+        )
+        assert pm._get_gpu_mode() == "on-demand"
+        assert pm._detect_display_profile() == ("on-demand", PROFILE_OFFLOAD)
+
+    def test_gpu_mode_intel_is_integrated(self):
+        pm = PowerManager(run=_with_prime("intel", _run_for_services()), read_file=lambda p: "")
+        assert pm._detect_display_profile() == ("intel", PROFILE_INTEGRATED)
+
+    def test_gpu_mode_nvidia_is_standard(self):
+        pm = PowerManager(run=_with_prime("nvidia", _run_for_services()), read_file=lambda p: "")
+        assert pm._detect_display_profile() == ("nvidia", PROFILE_STANDARD)
+
+    def test_gpu_mode_unavailable_is_standard(self):
+        # prime-select absent → rc=1 → unknown → standard (conservative default)
+        pm = PowerManager(run=_run_for_services(), read_file=lambda p: "")
+        assert pm._get_gpu_mode() == ""
+        assert pm._detect_display_profile() == ("unknown", PROFILE_STANDARD)
+
+    def test_status_includes_profile_keys(self):
+        pm = PowerManager(
+            run=_with_prime("on-demand", _run_all_services_enabled()),
+            read_file=_read_offload_ok,
+        )
+        result = pm.get_power_status()
+        assert result["gpu_mode"] == "on-demand"
+        assert result["display_profile"] == PROFILE_OFFLOAD
+
+
+class TestOffloadSuspendCheck:
+    """Suspend-service check adapts for render-offload / integrated laptops."""
+
+    def test_offload_suspend_is_informational_ok(self):
+        pm = PowerManager(run=_run_offload_services("on-demand"), read_file=lambda p: "")
+        issues, active = pm._check_suspend_services(PROFILE_OFFLOAD)
+        assert active is True
+        assert issues and all(i["severity"] == SEVERITY_OK for i in issues)
+        assert all(i["fixable"] is False for i in issues)
+
+    def test_integrated_suspend_is_ok(self):
+        pm = PowerManager(run=_run_for_services(), read_file=lambda p: "")
+        issues, active = pm._check_suspend_services(PROFILE_INTEGRATED)
+        assert active is True
+        assert issues[0]["severity"] == SEVERITY_OK
+
+
+class TestOffloadHibernateCheck:
+    """Hibernate check inverts NVIDIA expectations for render-offload."""
+
+    def test_offload_missing_config_is_critical(self):
+        pm = PowerManager(
+            run=_run_offload_services("on-demand", sleep_enabled=False),
+            read_file=_read_hibernate_ok,  # generic prereqs ok, no offload config
+        )
+        issues, active = pm._check_hibernate(PROFILE_OFFLOAD)
+        assert active is False
+        crit = [i for i in issues if i["severity"] == SEVERITY_CRITICAL]
+        assert len(crit) == 1
+        assert crit[0]["type"] == ISSUE_HIBERNATE
+        assert crit[0]["fixable"] is True
+        assert "modeset=0" in crit[0]["detail"]
+
+    def test_offload_enabled_sleep_services_is_warning(self):
+        pm = PowerManager(
+            run=_run_offload_services("on-demand", sleep_enabled=True),
+            read_file=_read_offload_ok,  # offload config present
+        )
+        issues, active = pm._check_hibernate(PROFILE_OFFLOAD)
+        assert active is False
+        warn = [i for i in issues if i["severity"] == SEVERITY_WARNING]
+        assert len(warn) == 1
+        assert warn[0]["fixable"] is True
+        assert not [i for i in issues if i["severity"] == SEVERITY_CRITICAL]
+
+    def test_offload_fully_configured_is_ok(self):
+        pm = PowerManager(
+            run=_run_offload_services("on-demand", sleep_enabled=False),
+            read_file=_read_offload_ok,
+        )
+        issues, active = pm._check_hibernate(PROFILE_OFFLOAD)
+        assert active is True
+        assert all(i["severity"] == SEVERITY_OK for i in issues)
+
+    def test_integrated_hibernate_ok_with_prereqs(self):
+        pm = PowerManager(run=_run_for_services(), read_file=_read_hibernate_ok)
+        issues, active = pm._check_hibernate(PROFILE_INTEGRATED)
+        assert active is True
+        assert all(i["severity"] == SEVERITY_OK for i in issues)
+
+
+class TestOffloadWaylandCheck:
+    """Wayland check must not demand modeset=1 when the dGPU drives no displays."""
+
+    def test_offload_wayland_no_modeset_critical(self):
+        pm = PowerManager(
+            run=_with_prime("on-demand", _run_loginctl("wayland")),
+            read_file=lambda p: "",
+        )
+        issues, is_wayland = pm._check_wayland_issues(PROFILE_OFFLOAD)
+        assert is_wayland is True
+        assert issues and all(i["severity"] == SEVERITY_OK for i in issues)
+        assert not [i for i in issues if i["severity"] == SEVERITY_CRITICAL]
+
+    def test_integrated_wayland_is_ok(self):
+        pm = PowerManager(
+            run=_with_prime("intel", _run_loginctl("wayland")),
+            read_file=lambda p: "",
+        )
+        issues, is_wayland = pm._check_wayland_issues(PROFILE_INTEGRATED)
+        assert is_wayland is True
+        assert all(i["severity"] == SEVERITY_OK for i in issues)
+
+
+class TestOffloadFix:
+    """Fix operations apply the render-offload remediation."""
+
+    def test_fix_hibernate_offload_writes_config_and_disables(self):
+        writes = []
+        complete = []
+        reboots = []
+        pm = PowerManager(
+            run=_run_offload_fix("on-demand", enabled={s: True for s in _SUSPEND_SERVICES}),
+            read_file=lambda p: "",  # config absent
+            write_file=lambda p, c: writes.append((p, c)),
+        )
+        pm.fix_hibernate(
+            "op-off",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete.append((ok, msg)),
+            lambda req, reason: reboots.append((req, reason)),
+        )
+        assert complete[0][0] is True
+        assert "Reboot required" in complete[0][1]
+        assert writes and writes[0][0] == MODPROBE_CONF_PATH
+        assert "modeset=0" in writes[0][1]
+        assert "PreserveVideoMemoryAllocations=0" in writes[0][1]
+        assert len(reboots) == 1
+
+    def test_fix_hibernate_offload_already_configured(self):
+        complete = []
+        pm = PowerManager(
+            run=_run_offload_fix("on-demand", enabled={s: False for s in _SUSPEND_SERVICES}),
+            read_file=_read_offload_ok,
+            write_file=lambda p, c: None,
+        )
+        pm.fix_hibernate(
+            "op-off2",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete.append((ok, msg)),
+        )
+        assert complete[0][0] is True
+        assert "already configured" in complete[0][1].lower()
+
+    def test_fix_suspend_offload_disables_services(self):
+        complete = []
+        pm = PowerManager(
+            run=_run_offload_fix("on-demand", enabled={s: True for s in _SUSPEND_SERVICES}),
+            read_file=lambda p: "",
+        )
+        pm.fix_suspend(
+            "op-off3",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete.append((ok, msg)),
+        )
+        assert complete[0][0] is True
+        assert "disabled" in complete[0][1].lower()
+
+    def test_fix_suspend_integrated_is_noop(self):
+        complete = []
+        pm = PowerManager(run=_with_prime("intel", _run_for_services()), read_file=lambda p: "")
+        pm.fix_suspend(
+            "op-int",
+            lambda oid, pct, msg: None,
+            lambda oid, ok, msg: complete.append((ok, msg)),
+        )
+        assert complete[0][0] is True
+        assert "intel" in complete[0][1].lower()
+
+
+class TestOffloadPreflight:
+    """Pre-flight checks reflect the render-offload / integrated remediation."""
+
+    def test_preflight_hibernate_offload(self):
+        pm = PowerManager(
+            run=_run_offload_services("on-demand", sleep_enabled=True),
+            read_file=lambda p: "",  # config absent
+        )
+        pf = pm.get_preflight_hibernate()
+        assert pf["ready"] is True
+        assert pf["already_fixed"] is False
+        descs = " ".join(c["description"].lower() for c in pf["changes"])
+        assert "config" in descs
+        assert "initramfs" in descs
+        assert "disable" in descs
+
+    def test_preflight_suspend_offload(self):
+        pm = PowerManager(
+            run=_run_offload_services("on-demand", sleep_enabled=True),
+            read_file=lambda p: "",
+        )
+        pf = pm.get_preflight_suspend()
+        assert pf["already_fixed"] is False
+        assert pf["changes"] and all(c["target_state"] == "disabled" for c in pf["changes"])
+
+    def test_preflight_integrated_nothing_to_do(self):
+        pm = PowerManager(run=_with_prime("intel", _run_for_services()), read_file=lambda p: "")
+        pf = pm.get_preflight_hibernate()
+        assert pf["already_fixed"] is True
+        assert pf["changes"] == []

@@ -8,12 +8,17 @@ Profiles:
     (default)   — fully working GPU with live stats
     --degraded  — driver installed but kernel module not loaded (no NVML)
     --no-driver — no driver installed at all
+    --offload   — render-offload Optimus laptop (PRIME on-demand); the Power
+                  view shows the render-offload hibernate remediation
+    --intel     — Intel-only mode (PRIME intel); NVIDIA disabled, nothing to fix
 
 Usage (from project root):
     # Terminal 1 - start mock daemon
     PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py
     PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --degraded
     PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --no-driver
+    PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --offload
+    PYTHONPATH=src:src/verde-daemon python3 tools/mock_daemon.py --intel
 
     # Terminal 2 - start GUI against session bus
     VERDE_USE_SESSION_BUS=1 PYTHONPATH=src:src/verde-daemon python3 tools/run_gui.py
@@ -342,6 +347,111 @@ def _build_power_status_degraded() -> dict:
     }
 
 
+# ── Optimus / PRIME display-profile power builders ───────────────────
+
+
+def _build_power_status_offload() -> dict:
+    """PRIME on-demand (render-offload) — the NVIDIA GPU drives no displays."""
+    return {
+        "overall_status": _v("s", "issues_found"),
+        "suspend_service_active": _v("b", True),
+        "hibernate_service_active": _v("b", False),
+        "secure_boot_enabled": _v("b", False),
+        "mok_enrolled": _v("b", False),
+        "wayland_session": _v("b", False),
+        "gpu_mode": _v("s", "on-demand"),
+        "display_profile": _v("s", "offload"),
+        "issues": _v(
+            "aa{sv}",
+            [
+                {
+                    "type": _v("s", "suspend"),
+                    "severity": _v("s", "ok"),
+                    "summary": _v("s", "Suspend is managed by the render-offload profile"),
+                    "detail": _v(
+                        "s",
+                        "The NVIDIA GPU is render-offload only (PRIME on-demand) "
+                        "and drives no displays.",
+                    ),
+                    "fixable": _v("b", False),
+                    "already_fixed": _v("b", True),
+                },
+                {
+                    "type": _v("s", "hibernate"),
+                    "severity": _v("s", "critical"),
+                    "summary": _v("s", "NVIDIA render-offload hibernate config is missing"),
+                    "detail": _v(
+                        "s",
+                        "Reliable hibernate requires taking nvidia out of the "
+                        "display path — NVreg_PreserveVideoMemoryAllocations=0 and "
+                        "nvidia-drm modeset=0 in "
+                        "/etc/modprobe.d/nvidia-power-management.conf.",
+                    ),
+                    "fixable": _v("b", True),
+                    "already_fixed": _v("b", False),
+                },
+                {
+                    "type": _v("s", "hibernate"),
+                    "severity": _v("s", "warning"),
+                    "summary": _v(
+                        "s", "NVIDIA sleep services are enabled on a render-offload system"
+                    ),
+                    "detail": _v(
+                        "s",
+                        "The nvidia suspend/resume/hibernate services can strand "
+                        "the screen on resume and should be disabled.",
+                    ),
+                    "fixable": _v("b", True),
+                    "already_fixed": _v("b", False),
+                },
+            ],
+        ),
+    }
+
+
+def _build_power_status_integrated() -> dict:
+    """PRIME intel — the NVIDIA GPU is disabled entirely; hibernate is native."""
+    return {
+        "overall_status": _v("s", "working"),
+        "suspend_service_active": _v("b", True),
+        "hibernate_service_active": _v("b", True),
+        "secure_boot_enabled": _v("b", False),
+        "mok_enrolled": _v("b", False),
+        "wayland_session": _v("b", False),
+        "gpu_mode": _v("s", "intel"),
+        "display_profile": _v("s", "integrated"),
+        "issues": _v(
+            "aa{sv}",
+            [
+                {
+                    "type": _v("s", "suspend"),
+                    "severity": _v("s", "ok"),
+                    "summary": _v("s", "Suspend is handled by the integrated GPU"),
+                    "detail": _v(
+                        "s",
+                        "The system is in Intel mode; the NVIDIA GPU is disabled "
+                        "and plays no part in suspend/resume.",
+                    ),
+                    "fixable": _v("b", False),
+                    "already_fixed": _v("b", True),
+                },
+                {
+                    "type": _v("s", "hibernate"),
+                    "severity": _v("s", "ok"),
+                    "summary": _v("s", "Hibernate is properly configured"),
+                    "detail": _v(
+                        "s",
+                        "The NVIDIA GPU is disabled (Intel mode); hibernate needs "
+                        "no NVIDIA configuration.",
+                    ),
+                    "fixable": _v("b", False),
+                    "already_fixed": _v("b", True),
+                },
+            ],
+        ),
+    }
+
+
 # ── No-driver mode builders ──────────────────────────────────────────
 
 
@@ -499,6 +609,10 @@ class MockVerdeService:
     def _handle_GetPowerStatus(self, _params, invocation):
         if self._profile == "degraded":
             data = _build_power_status_degraded()
+        elif self._profile == "offload":
+            data = _build_power_status_offload()
+        elif self._profile == "integrated":
+            data = _build_power_status_integrated()
         else:
             data = _build_power_status()
         invocation.return_value(GLib.Variant.new_tuple(_v("a{sv}", data)))
@@ -618,12 +732,26 @@ def main() -> None:
         action="store_true",
         help="Simulate no NVIDIA driver installed",
     )
+    group.add_argument(
+        "--offload",
+        action="store_true",
+        help="Simulate a render-offload Optimus laptop (PRIME on-demand)",
+    )
+    group.add_argument(
+        "--intel",
+        action="store_true",
+        help="Simulate Intel-only mode (PRIME intel, NVIDIA disabled)",
+    )
     args = parser.parse_args()
 
     if args.degraded:
         profile = "degraded"
     elif args.no_driver:
         profile = "no_driver"
+    elif args.offload:
+        profile = "offload"
+    elif args.intel:
+        profile = "integrated"
     else:
         profile = "normal"
 
