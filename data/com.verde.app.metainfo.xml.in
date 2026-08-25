@@ -19,6 +19,26 @@
   </description>
   <launchable type="desktop-id">com.verde.app.desktop</launchable>
   <url type="homepage">https://github.com/MohammedEl-sayedAhmed/verde</url>
+  <url type="bugtracker">https://github.com/MohammedEl-sayedAhmed/verde/issues</url>
+  <url type="vcs-browser">https://github.com/MohammedEl-sayedAhmed/verde</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Dashboard — live GPU health and statistics</caption>
+      <image type="source" width="990" height="770">https://raw.githubusercontent.com/MohammedEl-sayedAhmed/verde/main/docs/img/verde-dashboard.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Drivers — install, switch, and roll back</caption>
+      <image type="source" width="990" height="770">https://raw.githubusercontent.com/MohammedEl-sayedAhmed/verde/main/docs/img/verde-drivers.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Power — Optimus-aware suspend and hibernate fixes</caption>
+      <image type="source" width="990" height="770">https://raw.githubusercontent.com/MohammedEl-sayedAhmed/verde/main/docs/img/verde-power.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Diagnostics — shareable system report</caption>
+      <image type="source" width="990" height="770">https://raw.githubusercontent.com/MohammedEl-sayedAhmed/verde/main/docs/img/verde-diagnostics.png</image>
+    </screenshot>
+  </screenshots>
   <content_rating type="oars-1.1" />
   <releases>
     <release version="0.1.0" date="2026-03-18">

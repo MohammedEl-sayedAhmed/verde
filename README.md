@@ -25,7 +25,22 @@ Monitor your GPU, install and roll back drivers, and fix suspend/hibernate issue
 Verde is a graphical NVIDIA GPU manager for Ubuntu, built around a **strict privilege boundary**. The GUI you click runs as your normal user and has *zero* system access; everything privileged — installing drivers, editing `/etc`, rebuilding the initramfs — happens in a separate, **systemd-sandboxed daemon** that runs as root and authorizes every action through **Polkit**. Before any change, Verde takes a **snapshot** you can roll back to, records the change so it can be reverted, and writes it to an **append-only audit log**. It's the kind of tool you can hand to someone who would never open a terminal — and trust on your own machine.
 
 > [!NOTE]
-> Verde is in early development (`0.1.0`) and currently targets **Ubuntu 24.04 + NVIDIA**. Screenshots and a PPA are on the way.
+> Verde is in early development (`0.1.0`) and currently targets **Ubuntu 24.04 + NVIDIA**. A PPA is on the way.
+
+## Screenshots
+
+<div align="center">
+
+| | |
+|:---:|:---:|
+| ![Verde Dashboard showing live GPU health and statistics](docs/img/verde-dashboard.png) | ![Verde Drivers view for installing, switching, and rolling back drivers](docs/img/verde-drivers.png) |
+| **Dashboard** — live GPU health & stats | **Drivers** — install, switch & roll back |
+| ![Verde Power view with Optimus-aware suspend and hibernate fixes](docs/img/verde-power.png) | ![Verde Diagnostics view with a shareable system report](docs/img/verde-diagnostics.png) |
+| **Power** — Optimus-aware suspend/hibernate | **Diagnostics** — shareable system report |
+
+<sub>Shown in dark theme; Verde follows your system light/dark preference.</sub>
+
+</div>
 
 ## Features
 
@@ -53,7 +68,8 @@ Verde is a graphical NVIDIA GPU manager for Ubuntu, built around a **strict priv
 ### Power & Suspend
 
 - **Suspend/hibernate diagnosis** — detects the common NVIDIA suspend/hibernate/Wayland breakages
-- **One-click fixes** — enables the right `nvidia-suspend` services and writes the correct `modprobe` config
+- **Optimus / PRIME aware** — detects the display profile via `prime-select` and applies the *right* fix: on render-offload laptops (where the NVIDIA GPU drives no displays) it takes nvidia out of the display path (`modeset=0`, sleep services disabled); GPUs that drive displays get the standard fix. See the [Optimus render-offload notes](docs/nvidia-gpu-hibernate-ubuntu2404.md)
+- **One-click fixes** — writes the correct `modprobe` config and enables or disables the `nvidia-suspend`/`resume`/`hibernate` services to match your profile, then rebuilds the initramfs
 - **Module doctor** — explains *why* the kernel module won't load (missing headers, DKMS, kernel mismatch, Secure Boot, blacklisting) and fixes it
 
 ### Diagnostics
