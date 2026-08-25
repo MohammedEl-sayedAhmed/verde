@@ -209,7 +209,7 @@ verde/
 │   └── style.css                  # App stylesheet
 │
 ├── tests/                         # unit / integration / ui / security / accessibility
-├── docs/                          # architecture · modules · dbus-api · how-it-works · testing
+├── docs/                          # architecture · modules · dbus-api · how-it-works · testing · nvidia-gpu-hibernate
 ├── debian/                        # .deb packaging
 ├── po/                            # Translations (gettext)
 ├── meson.build                    # Build system
@@ -249,6 +249,7 @@ sudo verde-daemon --repair
 | [docs/dbus-api.md](docs/dbus-api.md) | Every D-Bus method, signal, and Polkit action |
 | [docs/modules.md](docs/modules.md) | Per-module reference for GUI and daemon |
 | [docs/testing.md](docs/testing.md) | Test strategy and how to run each layer |
+| [docs/nvidia-gpu-hibernate-ubuntu2404.md](docs/nvidia-gpu-hibernate-ubuntu2404.md) | Field notes: fixing NVIDIA GPU + hibernate on an Optimus laptop (Ubuntu 24.04) |
 
 ## Development
 

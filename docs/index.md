@@ -15,6 +15,7 @@
 - [Module Reference](modules.md)
 - [D-Bus API Reference](dbus-api.md)
 - [Test Strategy](testing.md)
+- [NVIDIA GPU + Hibernate Fix (Ubuntu 24.04)](nvidia-gpu-hibernate-ubuntu2404.md) — real-world Optimus troubleshooting notes
 
 ---
 
