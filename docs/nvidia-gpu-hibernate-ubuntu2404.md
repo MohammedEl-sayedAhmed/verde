@@ -61,3 +61,31 @@ sudo reboot
 **Caveat:** a future NVIDIA driver update may rewrite that `.conf` and drop `modeset=0`, re-breaking hibernate — reapply the two lines and `sudo update-initramfs -u -k all`.
 
 **Bulletproof fallback:** `sudo prime-select intel && sudo reboot` takes nvidia fully out of the picture (matches the original working 5.15 state); switch back with `sudo prime-select on-demand && sudo reboot` when you need the GPU.
+
+## How this relates to Verde
+
+Verde (this project) automates exactly this class of fix — its daemon detects and one-click-repairs NVIDIA suspend/hibernate problems. The relevant logic lives in [`src/verde-daemon/power_manager.py`](../src/verde-daemon/power_manager.py), which manages the same things this note edits by hand:
+
+- the modprobe config at `/etc/modprobe.d/nvidia-power-management.conf` (`MODPROBE_CONF_PATH`);
+- the `NVreg_PreserveVideoMemoryAllocations` / `NVreg_TemporaryFilePath` module options;
+- the `nvidia-suspend` / `nvidia-hibernate` / `nvidia-resume` systemd services;
+- and `nvidia-drm modeset`.
+
+**The tension this note exposes.** Verde's original suspend/hibernate fix targeted the *standard* configuration — where the NVIDIA GPU drives displays. It wrote `NVreg_PreserveVideoMemoryAllocations=1` (plus `NVreg_TemporaryFilePath`) and enabled the nvidia sleep services; separately, its Wayland check flags a missing `nvidia-drm modeset=1` as a critical issue. On an **Optimus laptop where the NVIDIA GPU drives no displays** (this machine — PRIME `on-demand`, render-offload only), that is the *opposite* of what makes hibernate reliable: here you want nvidia taken *out* of the display/KMS path (`PreserveVideoMemoryAllocations=0`, `modeset=0`, nvidia sleep services disabled), as described above.
+
+To resolve this, Verde now detects the display profile from the PRIME mode (`prime-select query`) and adapts its recommendation:
+
+| PRIME mode | GPU drives displays? | Verde's hibernate/suspend fix |
+|------------|----------------------|-------------------------------|
+| `nvidia`   | yes                  | Standard: `PreserveVideoMemoryAllocations=1` + `TemporaryFilePath`, enable nvidia sleep services |
+| `on-demand` | no (offload only)   | Offload-safe: `PreserveVideoMemoryAllocations=0`, `nvidia-drm modeset=0`, disable nvidia sleep services |
+| `intel`    | nvidia off entirely  | Nothing to fix — hibernate already works |
+
+So on this laptop Verde's guidance now matches the manual fix documented above rather than fighting it.
+
+Verde's **Power** view adapts its detection and one-click fix to the detected profile:
+
+| Render-offload (PRIME `on-demand`) | Standard (PRIME `nvidia`) |
+|:----------------------------------:|:-------------------------:|
+| ![Verde Power view on a render-offload Optimus laptop](img/verde-power-offload.png) | ![Verde Power view in standard NVIDIA mode](img/verde-power-standard.png) |
+| Flags the missing render-offload config (`PreserveVideoMemoryAllocations=0`, `nvidia-drm modeset=0`) and the enabled sleep services. | Falls back to the standard guidance — enable `nvidia-hibernate.service`. |
